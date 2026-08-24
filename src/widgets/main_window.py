@@ -809,7 +809,20 @@ class MainWindow(QMainWindow):
             widget.close()
 
     def _task_stopped(self, name: str) -> None:
-        AppDialog.information(name, f"停止{name}成功", self)
+        english = self.settings.language == "en_US"
+        names = {
+            "自动标注": "Auto labeling",
+            "数据集转换": "Dataset conversion",
+            "Auto labeling": "Auto labeling",
+            "Dataset conversion": "Dataset conversion",
+        }
+        display_name = names.get(name, name) if english else {
+            "Auto labeling": "自动标注",
+            "Dataset conversion": "数据集转换",
+        }.get(name, name)
+        title = "Task stopped" if english else display_name
+        message = f"Stopped {display_name} successfully" if english else f"停止{display_name}成功"
+        AppDialog.information(title, message, self)
 
     def open_directory(self) -> None:
         root = QFileDialog.getExistingDirectory(self, "选择数据集目录")
