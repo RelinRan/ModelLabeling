@@ -116,3 +116,32 @@ def test_conversion_preserves_split_paths_and_duplicate_basenames(tmp_path):
     val = service.load(output / "images" / "val" / "same.jpg", output / "annotations", settings, index)
     assert not train.error and not val.error
     assert train.annotations[0].points[0].x() < val.annotations[0].points[0].x()
+
+
+def test_cancelled_coco_conversion_does_not_publish_partial_json(tmp_path):
+    source = tmp_path / "source"
+    for index in range(3):
+        image = source / "images" / f"{index}.jpg"
+        label = source / "labels" / f"{index}.txt"
+        image.parent.mkdir(parents=True, exist_ok=True)
+        label.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (100, 100)).save(image)
+        label.write_text("0 0.5 0.5 0.2 0.2\n", encoding="utf-8")
+    (source / "data.yaml").write_text("names: [person]\n", encoding="utf-8")
+    output = tmp_path / "output"
+    progress = []
+
+    report = ConversionService().convert(
+        ConversionOptions(
+            source_format="yolo", source_path=source,
+            output_format="coco", output_path=output,
+            presets=[], source_task="yolo_detection", output_task="coco",
+            overwrite=True,
+        ),
+        progress_callback=lambda current, total: progress.append(current),
+        cancel_callback=lambda: len(progress) >= 1,
+    )
+
+    assert report.succeeded == 1
+    assert not (output / "annotations" / "annotations.json").exists()
+    assert (output / "annotations" / ".model_labeling.sqlite3").exists()

@@ -104,7 +104,6 @@ class ConversionService:
             label_presets=presets,
         )
         if output_format == "coco":
-            batch: list[tuple[Path, list]] = []
             for index, image_path in enumerate(images, start=1):
                 if cancel_callback and cancel_callback():
                     break
@@ -112,8 +111,11 @@ class ConversionService:
                     result = self.annotation_service.load(image_path, annotation_dir, settings)
                     if result.error:
                         raise ValueError(result.error)
-                    batch.append((image_path, result.annotations))
                     relative = image_path.relative_to(image_dir)
+                    self.annotation_service.save_coco_record(
+                        image_path, result.annotations, output_annotation_dir,
+                        presets, relative.as_posix(),
+                    )
                     output_image_path = output_image_dir / relative
                     output_image_path.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(image_path, output_image_path)
@@ -123,14 +125,12 @@ class ConversionService:
                     report.errors.append(f"{image_path.name}: {exc}")
                 if progress_callback:
                     progress_callback(index, len(images))
-            if report.failed == 0 and len(batch) == len(images):
+            if report.failed == 0 and report.succeeded == len(images):
                 try:
-                    self.annotation_service.save_coco_batch(
-                        batch, output_annotation_dir, presets, image_root=image_dir,
-                    )
+                    AnnotationService.export_coco(output_annotation_dir)
                 except Exception as exc:
                     report.errors.append(str(exc))
-                    report.failed = len(batch)
+                    report.failed = report.succeeded
                     report.succeeded = 0
             return report
         keypoint_names: list[str] = []

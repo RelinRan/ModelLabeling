@@ -308,7 +308,10 @@ class AnnotationService:
                 annotations.append(Annotation(ShapeType.RECTANGLE, category_name, bbox_points, color=color))
         return annotations
 
-    def _save_coco(self, image_path: Path, annotations: list[Annotation], directory: Path, presets: list[LabelPreset]) -> None:
+    def _save_coco(
+        self, image_path: Path, annotations: list[Annotation], directory: Path,
+        presets: list[LabelPreset], file_name: str | None = None,
+    ) -> None:
         with Image.open(image_path) as source_image:
             image_width, image_height = source_image.size
         categories = [
@@ -359,8 +362,20 @@ class AnnotationService:
                 )
             drafts.append(item)
         CocoAnnotationStore(directory).upsert_image(
-            image_path.name, image_width, image_height, categories, drafts
+            file_name or image_path.name, image_width, image_height, categories, drafts
         )
+
+    def save_coco_record(
+        self,
+        image_path: Path,
+        annotations: list[Annotation],
+        directory: Path,
+        presets: list[LabelPreset],
+        file_name: str | None = None,
+    ) -> None:
+        """Append one image transaction to a streaming COCO conversion."""
+        validate_annotations(annotations, "coco", "coco")
+        self._save_coco(image_path, annotations, directory, presets, file_name)
 
     @staticmethod
     def export_coco(directory: Path) -> Path | None:

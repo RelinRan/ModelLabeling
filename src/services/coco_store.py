@@ -106,9 +106,15 @@ class CocoAnnotationStore:
                 "INSERT OR IGNORE INTO coco_document(id,info,licenses,dirty) VALUES(1,'{}','[]',0)"
             )
             image_row = connection.execute(
-                "SELECT id,file_name FROM coco_images WHERE basename=? ORDER BY id LIMIT 1",
-                (Path(file_name).name,),
+                "SELECT id,file_name FROM coco_images WHERE file_name=? ORDER BY id LIMIT 1",
+                (file_name,),
             ).fetchone()
+            if image_row is None and Path(file_name).parent == Path("."):
+                basename_rows = connection.execute(
+                    "SELECT id,file_name FROM coco_images WHERE basename=? ORDER BY id LIMIT 2",
+                    (Path(file_name).name,),
+                ).fetchall()
+                image_row = basename_rows[0] if len(basename_rows) == 1 else None
             if image_row is None:
                 image_id = int(connection.execute("SELECT COALESCE(MAX(id),0)+1 FROM coco_images").fetchone()[0])
                 connection.execute(
