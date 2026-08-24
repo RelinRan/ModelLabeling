@@ -304,6 +304,11 @@ class AnnotationService:
 
     def save_coco_batch(self, records: list[tuple[Path, list[Annotation]]], directory: Path, presets: list[LabelPreset]) -> None:
         """Write one complete COCO document for a batch conversion."""
+        validate_annotations(
+            [annotation for _image_path, annotations in records for annotation in annotations],
+            "coco",
+            "coco",
+        )
         document = {"info": {"description": "ModelLabeling dataset"}, "licenses": [], "images": [], "annotations": [], "categories": []}
         category_by_name: dict[str, int] = {}
         for preset in presets:

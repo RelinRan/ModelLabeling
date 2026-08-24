@@ -137,6 +137,10 @@ class CocoAnnotationStore:
                 if existing is None:
                     next_category_id += 1
                 payload = dict(existing[1]) if existing else {"id": category_id, "name": name, "supercategory": "object"}
+                existing_keypoints = tuple(payload.get("keypoints", ()))
+                incoming_keypoints = tuple(category.get("keypoints", ()))
+                if existing_keypoints and incoming_keypoints and existing_keypoints != incoming_keypoints:
+                    raise ValueError(f"COCO keypoint schema conflicts with category: {name}")
                 payload.update({key: value for key, value in category.items() if key != "id"})
                 payload["id"] = category_id
                 connection.execute(

@@ -218,3 +218,23 @@ def test_coco_keypoints_take_priority_over_segmentation(tmp_path):
     assert len(result.annotations) == 1
     assert result.annotations[0].shape_type == ShapeType.KEYPOINT
     assert [item.name for item in result.annotations[0].keypoints] == ["nose", "eye"]
+
+
+def test_coco_store_rejects_conflicting_category_keypoint_schema(tmp_path):
+    store = CocoAnnotationStore(tmp_path / "annotations")
+    store.upsert_image(
+        "first.jpg", 100, 100,
+        [{"name": "person", "keypoints": ["nose", "eye"]}],
+        [],
+    )
+
+    with pytest.raises(ValueError, match="schema conflicts"):
+        store.upsert_image(
+            "second.jpg", 100, 100,
+            [{"name": "person", "keypoints": ["nose", "ear"]}],
+            [],
+        )
+
+    document = store.read_document()
+    assert len(document["images"]) == 1
+    assert document["categories"][0]["keypoints"] == ["nose", "eye"]

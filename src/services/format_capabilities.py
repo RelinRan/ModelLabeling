@@ -107,4 +107,18 @@ def validate_annotations(
             raise UnsupportedAnnotationError(
                 "YOLO Pose requires one consistent keypoint schema across the dataset"
             )
+    if capabilities.task == DatasetTask.COCO:
+        schemas_by_label: dict[str, set[tuple[str, ...]]] = {}
+        for annotation in annotations:
+            if annotation.keypoints:
+                schemas_by_label.setdefault(annotation.label, set()).add(
+                    tuple(keypoint.name for keypoint in annotation.keypoints)
+                )
+        inconsistent = sorted(
+            label for label, schemas in schemas_by_label.items() if len(schemas) > 1
+        )
+        if inconsistent:
+            raise UnsupportedAnnotationError(
+                "COCO requires one keypoint schema per category: " + ", ".join(inconsistent)
+            )
     return capabilities
