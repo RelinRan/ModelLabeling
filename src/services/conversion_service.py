@@ -179,7 +179,12 @@ class ConversionService:
                 report.errors.append(f"{image_path.name}: {exc}")
             if progress_callback:
                 progress_callback(index, total)
-        if output_format == "yolo" and output_task == "yolo_pose":
+        if (
+            output_format == "yolo"
+            and output_task == "yolo_pose"
+            and report.failed == 0
+            and report.succeeded + report.skipped == total
+        ):
             self._write_yolo_pose_yaml(options.output_path, presets, keypoint_names)
         return report
 

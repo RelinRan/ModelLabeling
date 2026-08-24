@@ -407,3 +407,92 @@ def test_yolo_pose_rejects_fractional_visibility(tmp_path):
     result = AnnotationService().load(image, labels, settings)
 
     assert result.error and "visibility must be 0, 1, or 2" in result.error
+
+
+def test_incompatible_coco_polygon_to_voc_conversion_fails_without_output(tmp_path):
+    source = tmp_path / "source"
+    image = source / "images" / "sample.jpg"
+    annotations_dir = source / "annotations"
+    image.parent.mkdir(parents=True)
+    annotations_dir.mkdir()
+    _sample_image(image)
+    presets = [LabelPreset("person", 0, "#00e5ff")]
+    polygon = Annotation(
+        ShapeType.POLYGON, "person",
+        [QPointF(10, 10), QPointF(100, 10), QPointF(50, 100)],
+    )
+    AnnotationService().save_coco_batch([(image, [polygon])], annotations_dir, presets)
+    output = tmp_path / "output"
+
+    report = ConversionService().convert(ConversionOptions(
+        source_format="coco", source_path=source,
+        output_format="voc", output_path=output,
+        presets=presets, source_task="coco", output_task="voc",
+        overwrite=True,
+    ))
+
+    assert report.failed == 1 and report.succeeded == 0
+    assert report.errors and "does not support" in report.errors[0]
+    assert not (output / "Annotations" / "sample.xml").exists()
+
+
+def test_failed_pose_conversion_does_not_publish_data_yaml(tmp_path):
+    source = tmp_path / "source"
+    image = source / "images" / "sample.jpg"
+    annotations_dir = source / "annotations"
+    image.parent.mkdir(parents=True)
+    annotations_dir.mkdir()
+    _sample_image(image)
+    presets = [LabelPreset("person", 0, "#00e5ff")]
+    rectangle = Annotation(
+        ShapeType.RECTANGLE, "person", [QPointF(10, 10), QPointF(100, 100)],
+    )
+    AnnotationService().save_coco_batch([(image, [rectangle])], annotations_dir, presets)
+    output = tmp_path / "output"
+
+    report = ConversionService().convert(ConversionOptions(
+        source_format="coco", source_path=source,
+        output_format="yolo", output_path=output,
+        presets=presets, source_task="coco", output_task="yolo_pose",
+        overwrite=True,
+    ))
+
+    assert report.failed == 1
+    assert not (output / "data.yaml").exists()
+
+
+def test_coco_polygon_converts_to_yolo_segmentation_without_semantic_loss(tmp_path):
+    source = tmp_path / "source"
+    image = source / "images" / "sample.jpg"
+    annotations_dir = source / "annotations"
+    image.parent.mkdir(parents=True)
+    annotations_dir.mkdir()
+    _sample_image(image)
+    presets = [LabelPreset("person", 0, "#00e5ff")]
+    points = [QPointF(10, 20), QPointF(110, 30), QPointF(60, 120)]
+    polygon = Annotation(ShapeType.POLYGON, "person", points)
+    AnnotationService().save_coco_batch([(image, [polygon])], annotations_dir, presets)
+    output = tmp_path / "output"
+
+    report = ConversionService().convert(ConversionOptions(
+        source_format="coco", source_path=source,
+        output_format="yolo", output_path=output,
+        presets=presets, source_task="coco", output_task="yolo_segmentation",
+        overwrite=True,
+    ))
+    settings = ProjectSettings(
+        image_dir=output / "images", annotation_dir=output / "labels",
+        annotation_format="yolo", dataset_task="yolo_segmentation",
+        label_presets=presets,
+    )
+    loaded = AnnotationService().load(
+        output / "images" / "sample.jpg", output / "labels", settings,
+    )
+
+    assert report.failed == 0 and report.succeeded == 1
+    assert not loaded.error and len(loaded.annotations) == 1
+    assert loaded.annotations[0].shape_type == ShapeType.POLYGON
+    assert loaded.annotations[0].label == "person"
+    for expected, actual in zip(points, loaded.annotations[0].points):
+        assert actual.x() == pytest.approx(expected.x(), abs=0.01)
+        assert actual.y() == pytest.approx(expected.y(), abs=0.01)
