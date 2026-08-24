@@ -38,32 +38,42 @@ class DatasetStatisticsWorker(QObject):
         try:
             service = AnnotationService()
             repository = DatasetIndexRepository(self.image_dir.parent.resolve(), self.image_dir, self.annotation_dir, self.settings.annotation_format)
-            records = self.records
-            if records is None:
-                records = []
-                for page in repository.iter_pages(500):
-                    if self.cancelled:
-                        return
-                    records.extend(ImageRecord(path=item.path, width=item.width, height=item.height, file_format=item.path.suffix.lstrip(".").upper(), file_size=item.file_size, annotations=[], status="pending", metadata_loaded=False) for item in page)
-            total = len(records)
+            if self.records is None:
+                total = repository.count()
+                pages = repository.iter_pages(500)
+            else:
+                total = len(self.records)
+                pages = (self.records[index:index + 500] for index in range(0, total, 500))
             self.progress.emit(0, total, self._snapshot(total, 0, 0, Counter()))
             index = service.build_index(self.annotation_dir, self.settings.annotation_format, cancel_callback=lambda: self.cancelled) if self.settings.annotation_format == "coco" else None
             labeled = total_labels = 0
             labels: Counter[str] = Counter()
             workers = 1 if self.settings.annotation_format == "coco" else min(6, max(1, os.cpu_count() or 1), max(1, total))
             with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="annotation-stats") as pool:
-                for start in range(0, total, 256):
+                processed = 0
+                for page in pages:
                     if self.cancelled:
                         return
-                    futures = [pool.submit(self._read_labels, record, index) for record in records[start:start + 256]]
-                    for offset, future in enumerate(futures):
-                        if self.cancelled:
-                            return
-                        values = future.result()
-                        if values:
-                            labeled += 1; total_labels += len(values); labels.update(values)
-                        current = start + offset + 1
-                        self.progress.emit(current, total, self._snapshot(total, labeled, total_labels, labels))
+                    records = [
+                        ImageRecord(
+                            path=item.path, width=item.width, height=item.height,
+                            file_format=item.path.suffix.lstrip(".").upper(),
+                            file_size=item.file_size, annotations=[],
+                            status=getattr(item, "annotation_status", "pending"),
+                            metadata_loaded=False,
+                        ) if isinstance(item, IndexedImage) else item
+                        for item in page
+                    ]
+                    for start in range(0, len(records), 256):
+                        futures = [pool.submit(self._read_labels, record, index) for record in records[start:start + 256]]
+                        for future in futures:
+                            if self.cancelled:
+                                return
+                            values = future.result()
+                            if values:
+                                labeled += 1; total_labels += len(values); labels.update(values)
+                            processed += 1
+                            self.progress.emit(processed, total, self._snapshot(total, labeled, total_labels, labels))
             self.finished.emit(self._snapshot(total, labeled, total_labels, labels))
         except Exception as exc:
             self.failed.emit(str(exc))
@@ -75,7 +85,10 @@ class DatasetStatisticsWorker(QObject):
     def _read_labels(self, record, index):
         if self.settings.annotation_format == "coco":
             relative = record.path.relative_to(self.image_dir).as_posix()
-            image = index.coco_images.get(relative) or index.coco_images.get(record.path.name)
+            image = index.coco_images.get(relative)
+            if image is None:
+                matches = [item for name, item in index.coco_images.items() if "/" in name and Path(name).name == record.path.name]
+                image = matches[0] if len(matches) == 1 else None
             if not image:
                 return []
             return [str(index.coco_categories.get(item.get("category_id"), f"class_{item.get('category_id')}")) for item in index.coco_annotations.get(image.get("id"), []) if len(item.get("bbox", [])) >= 4]

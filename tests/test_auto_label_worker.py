@@ -4,6 +4,7 @@ from src.models.project import ProjectSettings
 from src.services.workers import AutoLabelWorker
 from src.services.dataset_index import DatasetIndexRepository
 from src.services.dataset_index import IndexedImage
+from src.services.workers import DatasetStatisticsWorker
 
 
 def test_auto_label_model_class_names_are_authoritative():
@@ -123,3 +124,32 @@ def test_auto_label_reads_complete_dataset_from_index(tmp_path):
     assert len(loaded) == 1200
     assert loaded[0].path.name == "00000.jpg"
     assert loaded[-1].path.name == "01199.jpg"
+
+
+def test_statistics_worker_processes_index_pages_incrementally(tmp_path):
+    image_dir = tmp_path / "images"
+    annotation_dir = tmp_path / "labels"
+    image_dir.mkdir(); annotation_dir.mkdir()
+    repository = DatasetIndexRepository(tmp_path, image_dir, annotation_dir, "yolo")
+    records = []
+    for index in range(1200):
+        path = image_dir / f"{index:05d}.jpg"
+        records.append(IndexedImage(
+            0, path, path.name, path.name, index + 1, index + 1,
+        ))
+    repository.upsert_batch(records)
+    settings = ProjectSettings(
+        image_dir=image_dir, annotation_dir=annotation_dir,
+        annotation_format="yolo", dataset_task="yolo_detection",
+    )
+    worker = DatasetStatisticsWorker(None, image_dir, annotation_dir, settings, [])
+    progress = []
+    finished = []
+    worker.progress.connect(lambda current, total, snapshot: progress.append(current))
+    worker.finished.connect(finished.append)
+
+    worker.run()
+
+    assert progress[0] == 0
+    assert progress[-1] == 1200
+    assert finished and finished[0]["total_images"] == 1200
