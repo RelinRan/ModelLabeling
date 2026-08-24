@@ -25,6 +25,7 @@ from src.services.dataset_index import DatasetIndexRepository, IndexedImage
 from src.services.label_group_store import LabelGroupStore
 from src.services.project_service import ProjectService
 from src.services.operation_coordinator import OperationCoordinator
+from src.services.dataset_session import DatasetSession
 from src.services.onnx_service import YoloOnnxDetector
 from src.services.format_capabilities import CAPABILITIES, task_for_format
 from .annotation_edit_dialog import AnnotationEditDialog
@@ -758,6 +759,7 @@ class MainWindow(QMainWindow):
         self._dataset_dialog_guard.setInterval(40)
         self._dataset_dialog_guard.timeout.connect(self._hide_unwanted_dataset_dialogs)
         self.dataset_root: Path | None = None
+        self.dataset_session: DatasetSession | None = None
         self.dataset_total_images = 0
         self.dataset_indexed_images = 0
         self.dataset_session_id = uuid.uuid4().hex
@@ -1155,6 +1157,8 @@ class MainWindow(QMainWindow):
         records = self.image_panel.records
         if not 0 <= row < len(records): return
         record = records[row]; self.state.current_index = row; self.dataset_current_index = self.dataset_index_repository.position(record.path) if self.dataset_index_repository else row; self._remember_current_image(record.path); self.canvas.load_image(QImage(str(record.path)), record.annotations); self.image_panel.select_record(record); self.canvas.set_image_info(record.path.name, self.dataset_current_index + 1, self.dataset_total_images or len(self.state.images), record.file_format, record.file_size); self.refresh_stats(); self._load_selected_annotations(record)
+        if self.dataset_session is not None:
+            self.dataset_session.current_path = record.path
 
     def _image_records_fetched(self, records: list[ImageRecord]) -> None:
         """Keep the main state in sync with rows loaded by the paged list."""
@@ -1426,7 +1430,8 @@ class MainWindow(QMainWindow):
             detected = DatasetDetector.detect(requested_root)
         except ValueError as exc:
             AppDialog.information("打开数据集失败", str(exc), self); return
-        self.dataset_root = Path(root).resolve(); self.settings.annotation_format = detected.format_name; self.settings.dataset_task = detected.task_name or detected.format_name; self.settings.image_dir = detected.image_dir; self.settings.annotation_dir = detected.annotation_dir; self._apply_annotation_capabilities(); self._update_window_title(); self.refresh_stats(); self._remember_history(root); self._start_dataset_scan(detected.image_dir, detected.annotation_dir)
+        self.dataset_session = DatasetSession.from_detected(detected)
+        self.dataset_root = self.dataset_session.root; self.settings.annotation_format = self.dataset_session.format_name; self.settings.dataset_task = self.dataset_session.task_name; self.settings.image_dir = self.dataset_session.image_dir; self.settings.annotation_dir = self.dataset_session.annotation_dir; self._apply_annotation_capabilities(); self._update_window_title(); self.refresh_stats(); self._remember_history(root); self._start_dataset_scan(self.dataset_session.image_dir, self.dataset_session.annotation_dir)
 
     def _start_dataset_scan(self, image_dir: Path, annotation_dir: Path) -> None:
         self._stop_dataset_workers_for_switch()
@@ -1549,6 +1554,8 @@ class MainWindow(QMainWindow):
         if session_id != self.dataset_session_id or total <= 0:
             return
         self.dataset_total_images = total
+        if self.dataset_session is not None:
+            self.dataset_session.total_images = total
         if self._dataset_worker is not None and self._dataset_worker.session_id == session_id:
             self._dataset_worker.total_count = total
         percent = int(self.dataset_indexed_images / total * 100) if total else 0
