@@ -15,6 +15,7 @@ from src.models.keypoint import COCO_PERSON_SKELETON
 from src.services.format_capabilities import task_for_format, validate_annotations
 from src.models.project import ProjectSettings
 from src.utils.geometry import rect_from_points, rect_to_yolo, yolo_to_rect
+from .coco_store import CocoAnnotationStore
 
 
 @dataclass
@@ -163,10 +164,15 @@ class AnnotationService:
         return candidates[0] if candidates else None
 
     def _load_coco_document(self, directory: Path) -> dict:
+        store = CocoAnnotationStore(directory)
+        if store.is_initialized():
+            return store.read_document()
         path = self._coco_json_path(directory)
         if path is None:
             return {"images": [], "annotations": [], "categories": []}
-        return json.loads(path.read_text(encoding="utf-8"))
+        document = json.loads(path.read_text(encoding="utf-8"))
+        store.replace_document(document)
+        return document
 
     def _load_coco(self, image_path: Path, directory: Path, presets: list[LabelPreset], index: DatasetAnnotationIndex | None = None) -> list[Annotation]:
         if index is None:
@@ -277,6 +283,7 @@ class AnnotationService:
             document["annotations"].append(item)
             next_annotation_id += 1
         path.parent.mkdir(parents=True, exist_ok=True)
+        CocoAnnotationStore(directory).replace_document(document)
         # Replace atomically so an interrupted conversion cannot leave a
         # truncated or concatenated COCO document for the next image.
         with tempfile.NamedTemporaryFile(

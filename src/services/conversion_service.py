@@ -80,6 +80,8 @@ class ConversionService:
             if output_format == "coco":
                 for path in (output_annotation_dir / "annotations.json", output_annotation_dir / "instances.json"):
                     path.unlink(missing_ok=True)
+                for path in output_annotation_dir.glob(".model_labeling.sqlite3*"):
+                    path.unlink(missing_ok=True)
                 if output_image_dir.exists():
                     for path in output_image_dir.iterdir():
                         if path.is_file() and path.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".webp"}:
