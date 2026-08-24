@@ -1,0 +1,644 @@
+Script completed
+Wall time 0.5 seconds
+Output:
+
+Exit code: 0
+Wall time: 0.3 seconds
+Output:
+from __future__ import annotations
+
+from pathlib import Path
+
+from PySide6.QtCore import QObject, QThread, Qt, Signal
+from PySide6.QtGui import QAction, QImage, QKeySequence
+from PySide6.QtWidgets import QFileDialog, QLabel, QMainWindow, QMessageBox, QSplitter, QToolBar, QVBoxLayout, QWidget
+
+from src.models.annotation import LabelPreset
+from src.models.project import ProjectSettings, ProjectState
+from src.services.annotation_service import AnnotationService
+from src.services.image_service import ImageService
+from src.services.project_service import ProjectService
+from src.services.onnx_service import YoloOnnxDetector
+from .canvas_view import CanvasView
+from .conversion_dialog import ConversionDialog
+from .image_list_panel import ImageListPanel
+from .i18n import text
+from .preset_panel import PresetPanel
+from .settings_dialog import SettingsDialog
+from .operations_panel import OperationsPanel
+from .stats_dialog import StatsDialog
+
+
+class AutoLabelWorker(QObject):
+    progress = Signal(int, int)
+    finished = Signal()
+    failed = Signal(str)
+
+    def __init__(self, records, settings) -> None:
+        super().__init__()
+        self.records = records
+        self.settings = settings
+        self.cancelled = False
+
+    def run(self) -> None:
+        try:
+            if not self.settings.onnx_model_path:
+                raise ValueError("璇峰厛鍦ㄩ」鐩缃腑閫夋嫨 ONNX 妯″瀷")
+            detector = YoloOnnxDetector()
+            detector.load(self.settings.onnx_model_path)
+            total = len(self.records)
+            for index, record in enumerate(self.records, start=1):
+                if self.cancelled:
+                    break
+                from PIL import Image
+                with Image.open(record.path) as image:
+                    predictions = detector.predict(
+                        image,
+                        self.settings.label_presets,
+                        self.settings.input_size,
+                        self.settings.confidence_threshold,
+                        self.settings.nms_threshold,
+                    )
+                record.annotations = predictions
+                record.status = "labeled" if predictions else "unlabeled"
+                self.progress.emit(index, total)
+            self.finished.emit()
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class MainWindow(QMainWindow):
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("ModelLabeling")
+        self.resize(1440, 900)
+        self.annotation_service = AnnotationService()
+        self.image_service = ImageService(self.annotation_service)
+        self.project_service = ProjectService(self.annotation_service)
+        self.settings = ProjectSettings(
+            label_presets=[
+                LabelPreset("person", 0, "#00e5ff"),
+                LabelPreset("car", 1, "#ffca28"),
+                LabelPreset("other", 2, "#ff4081"),
+            ]
+        )
+        self.state = ProjectState(self.settings)
+        self.project_file: Path | None = None
+        self.dirty = False
+        self._build_ui()
+        self._build_actions()
+        self._apply_style()
+
+    def _build_ui(self) -> None:
+        self.image_panel = ImageListPanel()
+        self.canvas = CanvasView()
+        self.preset_panel = PresetPanel()
+        self.operations_panel = OperationsPanel(self.settings.language)
+        self.navigation_toolbar = self.operations_panel.navigation_toolbar
+        self.operations_panel.previous_button.clicked.connect(self.previous_image)
+        self.operations_panel.next_button.clicked.connect(self.next_image)
+        self.operations_panel.zoom_in_button.clicked.connect(self.canvas.zoom_in)
+        self.operations_panel.zoom_out_button.clicked.connect(self.canvas.zoom_out)
+        self.operations_panel.fit_button.clicked.connect(self.canvas.fit_image)
+        self.preset_panel.set_presets(self.settings.label_presets)
+        if self.settings.label_presets:
+            self.preset_panel.list.setCurrentRow(0)
+        self.preset_panel.presetSelected.connect(self.canvas.set_current_label)
+        self.preset_panel.presetsChanged.connect(self._presets_changed)
+        self.image_panel.imageSelected.connect(self.select_image)
+        self.image_panel.filtersChanged.connect(self.refresh_image_list)
+        self.canvas.dirtyChanged.connect(self._set_dirty)
+        self.canvas.annotationCreated.connect(lambda _: self.refresh_stats())
+        self.canvas.annotationDeleted.connect(self.refresh_stats)
+        self.canvas.set_enabled_shapes(self.settings.enabled_shapes)
+        left = QWidget()
+        left.setObjectName("sidePanel")
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(10, 10, 6, 10)
+        left_layout.setSpacing(10)
+        left_layout.addWidget(self.image_panel)
+        right = QWidget()
+        right.setObjectName("sidePanel")
+        right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(6, 10, 10, 10)
+        right_layout.setSpacing(10)
+        right_layout.addWidget(self.preset_panel)
+        right_layout.addWidget(self.operations_panel)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.addWidget(left)
+        splitter.addWidget(self.canvas)
+        splitter.addWidget(right)
+        splitter.setStretchFactor(1, 1)
+        self.setCentralWidget(splitter)
+        self.status = QLabel("")
+        self.statusBar().addPermanentWidget(self.status)
+
+    def _build_actions(self) -> None:
+        toolbar = QToolBar("宸ュ叿")
+        toolbar.setMovable(False)
+        self.addToolBar(toolbar)
+        actions = [
+            ("鎵撳紑", self.open_directory, "Ctrl+O"),
+            ("淇濆瓨", self.save_current, "Ctrl+S"),
+            ("璁剧疆", self.open_settings, ""),
+            ("缁熻", self.open_statistics, ""),
+            ("杞崲", self.open_conversion, ""),
+            ("鑷姩鏍囨敞", self.auto_label_all, ""),
+        ]
+        for name, handler, shortcut in actions:
+            action = QAction(name, self)
+            action.triggered.connect(handler)
+            if shortcut:
+                action.setShortcut(QKeySequence(shortcut))
+            toolbar.addAction(action)
+        self.save_action = next(action for action in toolbar.actions() if action.text() == "淇濆瓨")
+        self._refresh_toolbar()
+
+    def _refresh_toolbar(self) -> None:
+        self.save_action.setVisible(not self.settings.auto_save)
+        self.save_action.setEnabled(not self.settings.auto_save)
+
+    def _apply_style(self) -> None:
+        self.setStyleSheet(
+            """
+            QMainWindow, QWidget { background: #0b1017; color: #e4edf5; }
+            QWidget#sidePanel { background: #0e1721; border: 1px solid #203343; border-radius: 10px; }
+            QToolBar { background: #111a25; border: 1px solid #253547; border-radius: 10px; spacing: 5px; padding: 7px 10px; margin: 10px; }
+            QToolButton, QPushButton { background: #162331; border: 1px solid #2b4052; border-radius: 9px; padding: 7px 11px; color: #dce8f1; }
+            QToolButton:hover, QPushButton:hover { background: #1b3443; border-color: #00d9ff; color: #75efff; }
+            QToolButton:pressed, QPushButton:pressed { background: #0c6474; }
+            QListWidget, QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox { background: #101a25; border: 1px solid #2a3d4e; border-radius: 9px; padding: 7px; selection-background-color: #0b8196; }
+            QCheckBox { spacing: 7px; }
+            QCheckBox::indicator { width: 16px; height: 16px; }
+            QGraphicsView { border: 1px solid #1d3341; border-radius: 10px; }
+            QLabel { color: #dce8f1; }
+            QLabel#panelTitle { color: #f2f8fc; font-size: 15px; font-weight: 700; }
+            QFrame#statsCard { background: #101a25; border: 1px solid #263b4d; border-radius: 10px; }
+            QLabel#statsSummary { color: #d9f5ff; line-height: 1.4em; }
+            QLabel#statsLabels { color: #a9bfd0; font-family: Consolas; }
+            QLabel#operationFile, QLabel#operationLabels { color: #dce8f1; }
+            QLabel#imageInfoOverlay { background: rgba(8, 17, 26, 220); border: 1px solid #2b5365; border-radius: 10px; padding: 7px 10px; color: #e9fbff; font-weight: 600; }
+            QCheckBox#switchButton { min-width: 42px; max-width: 42px; min-height: 24px; max-height: 24px; }
+            QCheckBox#switchButton::indicator { width: 40px; height: 22px; border-radius: 11px; background: #263949; border: 1px solid #3c5668; }
+            QCheckBox#switchButton::indicator:checked { background: #00b9d4; border-color: #75efff; }
+            QSplitter::handle { background: #162433; }
+            """
+        )
+
+    def _presets_changed(self) -> None:
+        self.settings.label_presets = self.preset_panel.presets
+        if self.project_file:
+            self.project_service.save_settings(self.project_file, self.settings)
+        self.refresh_stats()
+
+    def _apply_language(self) -> None:
+        self.operations_panel.set_language(self.settings.language)
+        self.status.setText("")
+
+    def _set_dirty(self, value: bool) -> None:
+        self.dirty = value
+        self.status.setText("鏈繚瀛樹慨鏀? if value else "")
+
+    def open_directory(self) -> None:
+        root = QFileDialog.getExistingDirectory(self, "閫夋嫨鏁版嵁闆嗙洰褰?)
+        if not root:
+            return
+        path = Path(root)
+        saved_settings = self.project_service.load_settings(path / "model_labeling.json")
+        if saved_settings.label_presets:
+            self.settings = saved_settings
+        try:
+            image_dir, annotation_dir = self.project_service.resolve_dataset_paths(
+                path, self.settings.annotation_format
+            )
+        except ValueError:
+            image_dir = path
+            annotation_dir = path / ("labels" if self.settings.annotation_format == "yolo" else "Annotations")
+        annotation_dir.mkdir(parents=True, exist_ok=True)
+        self.settings.image_dir = image_dir
+        self.settings.annotation_dir = annotation_dir
+        self.project_file = path / "model_labeling.json"
+        self.state.settings = self.settings
+        self.preset_panel.set_presets(self.settings.label_presets)
+        self.canvas.set_enabled_shapes(self.settings.enabled_shapes)
+        self.state.images = self.image_service.scan(image_dir, annotation_dir, self.settings)
+        self.state.current_index = 0 if self.state.images else -1
+        self.refresh_image_list()
+        if self.state.images:
+            self.image_panel.list.setCurrentRow(0)
+        self.operations_panel.update_state(None, 0, len(self.state.images), [])
+        self._apply_language()
+        self.refresh_stats()
+
+    def refresh_image_list(self) -> None:
+        filtered = self.image_service.filter_records(
+            self.state.images,
+            self.image_panel.search.text(),
+            self.image_panel.selected_status(),
+        )
+        self.image_panel.set_records(filtered)
+
+    def select_image(self, row: int) -> None:
+        if row < 0 or row >= len(self.image_panel.records):
+            return
+        record = self.image_panel.records[row]
+        self.state.current_index = self.state.images.index(record)
+        image = QImage(str(record.path))
+        self.canvas.load_image(image, record.annotations)
+        self.canvas.set_image_info(record.path.name, row + 1, len(self.image_panel.records))
+        self.refresh_stats()
+
+    def save_current(self) -> None:
+        record = self.state.current_image
+        if record is None or self.settings.annotation_dir is None or self.project_file is None:
+            return
+        record.annotations = list(self.canvas.annotations)
+        record.status = "labeled" if record.annotations else "unlabeled"
+        try:
+            self.project_service.save_current(self.project_file, record.path, record.annotations, self.settings)
+        except (OSError, ValueError) as exc:
+            QMessageBox.critical(self, "淇濆瓨澶辫触", str(exc))
+            return
+        self._set_dirty(False)
+        self.refresh_image_list()
+        self.refresh_stats()
+        self._refresh_toolbar()
+
+    def request_image_change(self, delta: int) -> None:
+        if self.dirty and not self.settings.auto_save:
+            choice = QMessageBox.question(
+                self,
+                "鏈繚瀛樹慨鏀?,
+                "鏄惁淇濆瓨褰撳墠鏍囨敞锛?,
+                QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+            )
+            if choice == QMessageBox.StandardButton.Cancel:
+                return
+            if choice == QMessageBox.StandardButton.Save:
+                self.save_current()
+        elif self.dirty and self.settings.auto_save:
+            self.save_current()
+        target = self.state.current_index + delta
+        if 0 <= target < len(self.state.images):
+            self.state.current_index = target
+            filtered = self.image_service.filter_records(self.state.images)
+            row = filtered.index(self.state.images[target]) if self.state.images[target] in filtered else -1
+            if row >= 0:
+                self.image_panel.list.setCurrentRow(row)
+
+    def previous_image(self) -> None:
+        self.request_image_change(-1)
+
+    def next_image(self) -> None:
+        self.request_image_change(1)
+
+    def refresh_stats(self) -> None:
+        if self.state.current_image:
+            self.state.current_image.annotations = list(self.canvas.annotations)
+        stats = self.state.statistics()
+        current = self.state.current_image
+        self.operations_panel.update_state(
+            current.path.name if current else None,
+            stats["labeled_images"],
+            stats["total_images"],
+            [annotation.label for annotation in current.annotations] if current else [],
+        )
+
+    def open_settings(self) -> None:
+        dialog = SettingsDialog(self.settings, self)
+        if dialog.exec() == dialog.DialogCode.Accepted:
+            self.settings = dialog.apply()
+            self.state.settings = self.settings
+            self.canvas.set_visual_settings(self.settings.line_width, self.settings.text_size)
+            self.canvas.set_enabled_shapes(self.settings.enabled_shapes)
+            self.preset_panel.set_presets(self.settings.label_presets)
+            self._apply_language()
+            if self.project_file:
+                self.project_service.save_settings(self.project_file, self.settings)
+            self._refresh_toolbar()
+            self.refresh_stats()
+
+    def open_conversion(self) -> None:
+        ConversionDialog(self.settings.label_presets, self).exec()
+
+    def open_statistics(self) -> None:
+        if not self.state.images:
+            QMessageBox.information(self, text("statistics", self.settings.language), text("no_statistics", self.settings.language))
+            return
+        StatsDialog(self.state.statistics(), self.settings.language, self).exec()
+
+    def auto_label_all(self) -> None:
+        if not self.state.images:
+            QMessageBox.information(self, "鑷姩鏍囨敞", "璇峰厛鎵撳紑鍥剧墖鐩綍")
+            return
+        if not self.settings.onnx_model_path:
+            QMessageBox.information(self, "鑷姩鏍囨敞", "璇峰厛鍦ㄩ」鐩缃腑閫夋嫨 ONNX 妯″瀷")
+            return
+        self._set_auto_labeling(True)
+        self.auto_thread = QThread(self)
+        self.auto_worker = AutoLabelWorker(self.state.images, self.settings)
+        self.auto_worker.moveToThread(self.auto_thread)
+        self.auto_thread.started.connect(self.auto_worker.run)
+        self.auto_worker.progress.connect(
+            lambda current, total: self.status.setText(f"鑷姩鏍囨敞涓? {current}/{total}")
+        )
+        self.auto_worker.finished.connect(self._auto_label_finished)
+        self.auto_worker.failed.connect(self._auto_label_failed)
+        self.auto_worker.finished.connect(self.auto_thread.quit)
+        self.auto_worker.failed.connect(self.auto_thread.quit)
+        self.auto_thread.finished.connect(self._auto_thread_finished)
+        self.auto_thread.start()
+
+    def _set_auto_labeling(self, active: bool) -> None:
+        self.canvas.setEnabled(not active)
+        self.image_panel.setEnabled(not active)
+        self.preset_panel.setEnabled(not active)
+        self.save_action.setEnabled(not active)
+        if not self.settings.auto_save:
+            self.save_action.setVisible(not active)
+
+    def _auto_label_finished(self) -> None:
+        self.refresh_image_list()
+        self.refresh_stats()
+        self._set_dirty(True)
+        self.status.setText("鑷姩鏍囨敞瀹屾垚")
+
+    def _auto_label_failed(self, message: str) -> None:
+        self.status.setText(f"鑷姩鏍囨敞澶辫触: {message}")
+
+    def _auto_thread_finished(self) -> None:
+        self._set_auto_labeling(False)
+        self.auto_worker.deleteLater()
+        self.auto_thread.deleteLater()
+
+
+Exit code: 0
+Wall time: 0.3 seconds
+Output:
+from __future__ import annotations
+
+import json
+import xml.etree.ElementTree as ET
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from PIL import Image
+from PySide6.QtCore import QPointF, QRectF
+
+from src.models.annotation import Annotation, LabelPreset, ShapeType
+from src.models.project import ProjectSettings
+from src.utils.geometry import rect_from_points, rect_to_yolo, yolo_to_rect
+
+
+@dataclass
+class LoadResult:
+    annotations: list[Annotation] = field(default_factory=list)
+    error: str | None = None
+
+
+@dataclass
+class SaveResult:
+    ok: bool
+    error: str | None = None
+
+
+class AnnotationService:
+    def load(self, image_path: Path, annotation_dir: Path, settings: ProjectSettings) -> LoadResult:
+        try:
+            if settings.annotation_format == "voc":
+                return LoadResult(self._load_voc(image_path, annotation_dir, settings.label_presets))
+            return LoadResult(self._load_yolo(image_path, annotation_dir, settings.label_presets))
+        except (OSError, ValueError, ET.ParseError, KeyError) as exc:
+            return LoadResult(error=str(exc))
+
+    def save(
+        self,
+        image_path: Path,
+        annotations: list[Annotation],
+        annotation_dir: Path,
+        settings: ProjectSettings,
+    ) -> SaveResult:
+        try:
+            annotation_dir.mkdir(parents=True, exist_ok=True)
+            if settings.annotation_format == "voc":
+                self._save_voc(image_path, annotations, annotation_dir, settings.label_presets)
+            else:
+                self._save_yolo(image_path, annotations, annotation_dir, settings.label_presets)
+            return SaveResult(True)
+        except (OSError, ValueError, KeyError) as exc:
+            return SaveResult(False, str(exc))
+
+    def load_internal_metadata(self, metadata_path: Path) -> dict[str, list[Annotation]]:
+        if not metadata_path.exists():
+            return {}
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        return {
+            key: [Annotation.from_dict(item) for item in values]
+            for key, values in payload.items()
+        }
+
+    def save_internal_metadata(
+        self,
+        metadata_path: Path,
+        data: dict[str, list[Annotation]],
+    ) -> None:
+        metadata_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {key: [item.to_dict() for item in values] for key, values in data.items()}
+        metadata_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _preset_maps(self, presets: list[LabelPreset]) -> tuple[dict[str, int], dict[int, LabelPreset]]:
+        by_name = {preset.name: preset.class_id for preset in presets}
+        by_id = {preset.class_id: preset for preset in presets}
+        return by_name, by_id
+
+    def _load_voc(self, image_path: Path, directory: Path, presets: list[LabelPreset]) -> list[Annotation]:
+        xml_path = directory / f"{image_path.stem}.xml"
+        if not xml_path.exists():
+            return []
+        root = ET.parse(xml_path).getroot()
+        _, by_id = self._preset_maps(presets)
+        by_name = {preset.name: preset for preset in presets}
+        annotations: list[Annotation] = []
+        for obj in root.findall("object"):
+            name = (obj.findtext("name") or "").strip()
+            if not name:
+                raise ValueError(f"missing object name in {xml_path.name}")
+            preset = by_name.get(name)
+            color = preset.color if preset else "#00e5ff"
+            box = obj.find("bndbox")
+            if box is None:
+                raise ValueError(f"missing bndbox for {name}")
+            points = [
+                QPointF(float(box.findtext("xmin", "0")), float(box.findtext("ymin", "0"))),
+                QPointF(float(box.findtext("xmax", "0")), float(box.findtext("ymax", "0"))),
+            ]
+            annotations.append(Annotation(ShapeType.RECTANGLE, name, points, color=color))
+        return annotations
+
+    def _save_voc(
+        self,
+        image_path: Path,
+        annotations: list[Annotation],
+        directory: Path,
+        presets: list[LabelPreset],
+    ) -> None:
+        with Image.open(image_path) as image:
+            width, height = image.size
+        root = ET.Element("annotation")
+        ET.SubElement(root, "folder").text = image_path.parent.name
+        ET.SubElement(root, "filename").text = image_path.name
+        size = ET.SubElement(root, "size")
+        ET.SubElement(size, "width").text = str(width)
+        ET.SubElement(size, "height").text = str(height)
+        ET.SubElement(size, "depth").text = str(len(image_path.suffix))
+        for annotation in annotations:
+            rect = rect_from_points(annotation.points)
+            obj = ET.SubElement(root, "object")
+            ET.SubElement(obj, "name").text = annotation.label
+            box = ET.SubElement(obj, "bndbox")
+            ET.SubElement(box, "xmin").text = str(round(rect.left()))
+            ET.SubElement(box, "ymin").text = str(round(rect.top()))
+            ET.SubElement(box, "xmax").text = str(round(rect.right()))
+            ET.SubElement(box, "ymax").text = str(round(rect.bottom()))
+        ET.ElementTree(root).write(directory / f"{image_path.stem}.xml", encoding="utf-8", xml_declaration=True)
+
+    def _load_yolo(self, image_path: Path, directory: Path, presets: list[LabelPreset]) -> list[Annotation]:
+        txt_path = directory / f"{image_path.stem}.txt"
+        if not txt_path.exists():
+            return []
+        with Image.open(image_path) as image:
+            width, height = image.size
+        _, by_id = self._preset_maps(presets)
+        annotations: list[Annotation] = []
+        for line_number, raw in enumerate(txt_path.read_text(encoding="utf-8").splitlines(), start=1):
+            if not raw.strip():
+                continue
+            parts = raw.split()
+            if len(parts) != 5:
+                raise ValueError(f"{txt_path.name}:{line_number}: expected 5 values")
+            class_id = int(parts[0])
+            preset = by_id.get(class_id)
+            if preset is None:
+                raise ValueError(f"{txt_path.name}:{line_number}: unknown class id {class_id}")
+            values = tuple(float(item) for item in parts[1:5])
+            if any(value < 0.0 or value > 1.0 for value in values):
+                raise ValueError(f"{txt_path.name}:{line_number}: normalized value out of range")
+            rect = yolo_to_rect(values, width, height)
+            annotations.append(
+                Annotation(
+                    ShapeType.RECTANGLE,
+                    preset.name,
+                    [rect.topLeft(), rect.bottomRight()],
+                    color=preset.color,
+                )
+            )
+        return annotations
+
+    def _save_yolo(
+        self,
+        image_path: Path,
+        annotations: list[Annotation],
+        directory: Path,
+        presets: list[LabelPreset],
+    ) -> None:
+        with Image.open(image_path) as image:
+            width, height = image.size
+        by_name, _ = self._preset_maps(presets)
+        lines: list[str] = []
+        for annotation in annotations:
+            if annotation.label not in by_name:
+                raise ValueError(f"label is not in presets: {annotation.label}")
+            rect = rect_from_points(annotation.points)
+            center_x, center_y, box_width, box_height = rect_to_yolo(rect, width, height)
+            lines.append(
+                f"{by_name[annotation.label]} {center_x:.6f} {center_y:.6f} "
+                f"{box_width:.6f} {box_height:.6f}"
+            )
+        (directory / f"{image_path.stem}.txt").write_text(
+            "\n".join(lines) + ("\n" if lines else ""),
+            encoding="utf-8",
+        )
+
+
+Exit code: 0
+Wall time: 0.3 seconds
+Output:
+from src.models.project import ProjectSettings
+from src.widgets.main_window import MainWindow
+
+
+def test_main_window_hides_save_action_when_auto_save_is_enabled(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.settings.auto_save = True
+    window._refresh_toolbar()
+
+    assert not window.save_action.isVisible()
+
+
+def test_main_window_moves_navigation_into_annotation_operations_panel(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    assert window.operations_panel.title_label.text() == "鏍囨敞鎿嶄綔"
+    assert window.navigation_toolbar.parent() is window.operations_panel
+
+from src.models.annotation import LabelPreset, ShapeType
+from src.models.project import ProjectSettings
+from src.services.project_service import ProjectService
+
+
+def test_project_settings_round_trip(tmp_path):
+    settings = ProjectSettings(
+        image_dir=tmp_path,
+        annotation_dir=tmp_path / "labels",
+        label_presets=[LabelPreset("cat", 0, "#fff")],
+    )
+    path = tmp_path / "project.json"
+    service = ProjectService()
+    service.save_settings(path, settings)
+    loaded = service.load_settings(path)
+    assert loaded.image_dir == tmp_path
+    assert loaded.label_presets[0].name == "cat"
+
+
+def test_project_settings_round_trip_preserves_enabled_shapes(tmp_path):
+    path = tmp_path / "project.json"
+    service = ProjectService()
+    service.save_settings(
+        path,
+        ProjectSettings(enabled_shapes=[ShapeType.RECTANGLE, ShapeType.POLYGON]),
+    )
+
+    assert service.load_settings(path).enabled_shapes == [ShapeType.RECTANGLE, ShapeType.POLYGON]
+
+
+def test_project_settings_round_trip_preserves_language(tmp_path):
+    path = tmp_path / "project.json"
+    service = ProjectService()
+    service.save_settings(path, ProjectSettings(language="en_US"))
+
+    assert service.load_settings(path).language == "en_US"
+
+
+def test_resolve_yolo_dataset_root(tmp_path):
+    root = tmp_path / "dataset"
+    (root / "images").mkdir(parents=True)
+    (root / "labels").mkdir()
+
+    assert ProjectService.resolve_dataset_paths(root, "yolo") == (
+        root / "images",
+        root / "labels",
+    )
+
+
+def test_resolve_voc_dataset_root(tmp_path):
+    root = tmp_path / "dataset"
+    (root / "JPEGImages").mkdir(parents=True)
+    (root / "Annotations").mkdir()
+
+    assert ProjectService.resolve_dataset_paths(root, "voc") == (
+        root / "JPEGImages",
+        root / "Annotations",
+    )
+

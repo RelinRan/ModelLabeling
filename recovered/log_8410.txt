@@ -1,0 +1,810 @@
+Script completed
+Wall time 0.6 seconds
+Output:
+
+Warning: truncated output (original token count: 11902)
+Total output lines: 1020
+
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from PySide6.QtCore import QObject, QThread, Qt, Signal
+from PySide6.QtGui import QAction, QImage, QKeySequence, QColor
+from PySide6.QtWidgets import QFileDialog, QLabel, QMainWindow, QMessageBox, QSplitter, QToolBar, QVBoxLayout, QWidget,
+ QHBoxLayout
+
+from src.models.annotation import LabelPreset
+from src.models.project import ProjectSettings, ProjectState
+from src.services.annotation_service import AnnotationService
+from src.services.image_service import ImageService
+from src.services.project_service import ProjectService
+from src.services.onnx_service import YoloOnnxDetector
+from .canvas_view import CanvasView
+from .conversion_dialog import ConversionDialog
+from .image_list_panel import ImageListPanel
+from .i18n import text
+from .preset_panel import PresetPanel
+from .settings_dialog import SettingsDialog
+from .operations_panel import OperationsPanel
+from .stats_dialog import StatsDialog
+from .theme import idea_stylesheet
+
+
+class AutoLabelWorker(QObject):
+    progress = Signal(int, int)
+    finished = Signal()
+    failed = Signal(str)
+
+    def __init__(self, records, settings) -> None:
+        super().__init__()
+        self.records = records
+        self.settings = settings
+        self.cancelled = False
+
+    def run(self) -> None:
+        try:
+            if not self.settings.onnx_model_path:
+                raise ValueError("璇峰厛鍦ㄩ」鐩缃腑閫夋嫨 ONNX 妯″瀷")
+            detector = YoloOnnxDetector()
+            detector.load(self.settings.onnx_model_path)
+            total = len(self.records)
+            for index, record in enumerate(self.records, start=1):
+                if self.cancelled:
+                    break
+                from PIL import Image
+                with Image.open(record.path) as image:
+                    predictions = detector.predict(
+                        image,
+                        self.settings.label_presets,
+                        self.settings.input_size,
+                        self.settings.confidence_threshold,
+                        self.settings.nms_threshold,
+                    )
+                record.annotations = predictions
+                record.status = "labeled" if predictions else "unlabeled"
+                self.progress.emit(index, total)
+            self.finished.emit()
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class MainWindow(QMainWindow):
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("ModelLabeling - Annotation Workbench")
+        self.resize(1440, 900)
+        self.annotation_service = AnnotationService()
+        self.image_service = ImageService(self.annotation_service)
+        self.project_service = ProjectService(self.annotation_service)
+        self.settings = ProjectSettings(
+            label_presets=[
+                LabelPreset("person", 0, "#00e5ff"),
+                LabelPreset("car", 1, "#ffca28"),
+                LabelPreset("other", 2, "#ff4081"),
+            ]
+        )
+        self.state = ProjectState(self.settings)
+        self.project_file: Path | None = None
+        self.dirty = False
+        self._build_ui()
+        self._build_actions()
+        self._apply_style()
+
+    def _build_ui(self) -> None:
+        self.image_panel = ImageListPanel()
+        self.canvas = CanvasView()
+        self.preset_panel = PresetPanel()
+        self.operations_panel = OperationsPanel(self.settings.language)
+        self.navigation_toolbar = self.operations_panel.navigation_toolbar
+        self.operations_panel.previous_button.clicked.connect(self.previous_image)
+        self.operations_panel.next_button.clicked.connect(self.next_image)
+        self.operations_panel.zoom_in_button.clicked.connect(self.canvas.zoom_in)
+        self.operations_panel.zoom_out_button.clicked.connect(self.canvas.zoom_out)
+        self.operations_panel.fit_button.clicked.connect(self.canvas.fit_image)
+        self.preset_panel.set_presets(self.settings.label_presets)
+        if self.settings.label_presets:
+            self.preset_panel.list.setCurrentRow(0)
+        self.preset_panel.presetSelected.connect(self.canvas.set_current_label)
+        self.preset_panel.presetsChanged.connect(self._presets_changed)
+        self.image_panel.imageSelected.connect(self.select_image)
+        self.image_panel.filtersChanged.connect(self.refresh_image_list)
+        self.canvas.dirtyChanged.connect(self._set_dirty)
+        self.canvas.annotationCreated.connect(lambda _: self.refresh_stats())
+        self.canvas.annotationDeleted.connect(self.refresh_stats)
+        self.canvas.set_enabled_shapes(self.settings.enabled_shapes)
+        left = QWidget()
+        left.setObjectName("projectToolWindow")
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(10, 10, 6, 10)
+        left_layout.setSpacing(10)
+        left_layout.addWidget(self.image_panel)
+        right = QWidget()
+        right.setObjectName("rightToolWindow")
+        right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(6, 10, 10, 10)
+        right_layout.setSpacing(10)
+        right_layout.addWidget(self.preset_panel)
+        right_layout.addWidget(self.operations_panel)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.addWidget(left)
+        editor = QWidget()
+        editor.setObjectName("editorToolWindow")
+        editor_layout = QVBoxLayout(editor)
+        editor_layout.setContentsMargins(0, 0, 0, 0)
+        editor_layout.addWidget(self.canvas)
+        splitter.addWidget(editor)
+        splitter.addWidget(right)
+        splitter.setStretchFactor(1, 1)
+        self.setCentralWidget(splitter)
+        self.status = QLabel("")
+        self.status.setObjectName("statusMuted")
+        self.status_bar = QWidget()
+        self.status_bar.setObjectName("ideaStatusBar")
+        status_layout = QHBoxLayout(self.status_bar)
+        status_layout.setContentsMargins(8, 0, 8, 0)
+        self.status_format = QLabel("YOLO")
+        self.status_image = QLabel("-- x --")
+        self.status_zoom = QLabel("100%")
+        self.status_autosave = QLabel("Auto Save")
+        for label in (self.status_format, self.status_image, self.status_zoom, self.status_autosave, self.status):
+            label.setObjectName("statusMuted")
+            status_layout.addWidget(label)
+        status_layout.addStretch()
+        self.statusBar().addWidget(self.status_bar, 1)
+        self.statusBar().setObjectName("ideaStatusBar")
+
+    def _build_actions(self) -> None:
+        self._build_menu_bar()
+        toolbar = QToolBar("宸ュ叿")
+        toolbar.setMovable(False)
+        self.addToolBar(toolbar)
+        actions = [
+            ("鎵撳紑", self.open_directory, "Ctrl+O"),
+            ("淇濆瓨", self.save_current, "Ctrl+S"),
+            ("璁剧疆", self.open_settings, ""),
+            ("缁熻", self.open_statistics, ""),
+            ("杞崲", self.open_conversion, ""),
+            ("鑷姩鏍囨敞", self.auto_label_all, ""),
+        ]
+        for name, handler, shortcut in actions:
+            action = QAction(name, self)
+            action.triggered.connect(handler)
+            if shortcut:
+                action.setShortcut(QKeySequence(shortcut))
+            toolbar.addAction(action)
+        self.save_action = next(action for action in toolbar.actions() if action.text() == "淇濆瓨")
+        self._refresh_toolbar()
+
+    def _build_menu_bar(self) -> None:
+        file_menu = self.menuBar().addMenu("鏂囦欢")
+        edit_menu = self.menuBar().addMenu("缂栬緫")
+        view_menu = self.menuBar().addMenu("鏌ョ湅")
+        tools_menu = self.menuBar().addMenu("宸ュ叿")
+        self.menuBar().addMenu("甯姪")
+        open_action = file_menu.addAction("鎵撳紑")
+        open_action.setShortcut(QKeySequence("Ctrl+O"))
+        open_action.triggered.connect(self.open_directory)
+        save_action = file_menu.addAction("淇濆瓨")
+        save_action.setShortcut(QKeySequence("Ctrl+S"))
+        save_action.triggered.connect(self.save_current)
+        file_menu.addSeparator()
+        file_menu.addAction("閫€鍑?, self.close)
+        view_menu.addAction("閫傚簲鐢诲竷", self.canvas.fit_image)
+        view_menu.addAction("鏀惧ぇ", self.canvas.zoom_in)
+        view_menu.addAction("缂╁皬", self.canvas.zoom_out)
+        tools_menu.addAction("鏍囨敞璁剧疆", self.open_settings)
+        tools_menu.addAction("鏁版嵁缁熻", self.open_statistics)
+        tools_menu.addAction("鏁版嵁杞崲", self.open_conversion)
+        tools_menu.addAction("鑷姩鏍囨敞", self.auto_label_all)
+
+    def _refresh_toolbar(self) -> None:
+        self.save_action.setVisible(not self.settings.auto_save)
+        self.save_action.setEnabled(not self.settings.auto_save)
+
+    def _apply_style(self) -> None:
+        self.setStyleSheet(idea_stylesheet() + """
+            QMainWindow, QWidget { background: #0b1017; color: #e4edf5; }
+            QWidget#sidePanel { background: #0e1721; border: 1px solid #203343; border-radius: 10px; }
+            QToolBar { background: #111a25; border: 1px solid #253547; border-radius: 10px; spacing: 5px; padding: 7px 
+10px; margin: 10px; }
+            QToolButton, QPushButton { background: #162331; border: 1px solid #2b4052; border-radius: 9px; padding: 7px
+ 11px; color: #dce8f1; }
+            QToolButton:hover, QPushButton:hover { background: #1b3443; border-color: #00d9ff; color: #75efff; }
+            QToolButton:pressed, QPushButton:pressed { background: #0c6474; }
+            QListWidget, QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox { background: #101a25; border: 1px solid #2a3d4
+e; border-radius: 9px; padding: 7px; selection-background-color: #0b8196; }
+            QCheckBox { spacing: 7px; }
+            QCheckBox::indicator { width: 16px; height: 16px; }
+            QGraphicsView { border: 1px solid #1d3341; border-radius: 10px; }
+            QLabel { color: #dce8f1; }
+            QLabel#panelTitle { color: #f2f8fc; font-size: 15px; font-weight: 700; }
+            QFrame#statsCard { background: #101a25; border: 1px solid #263b4d; border-radius: 10px; }
+            QLabel#statsSummary { color: #d9f5ff; line-height: 1.4em; }
+            QLabel#statsLabels { color: #a9bfd0; font-family: Consolas; }
+            QLabel#operationFile, QLabel#operationLabels { color: #dce8f1; }
+            QLabel#imageInfoOverlay { background: rgba(8, 17, 26, 220); border: 1px solid #2b5365; border-radius: 10px;
+ padding: 7px 10px; color: #e9fbff; font-weight: 600; }
+            QCheckBox#switchButton { min-width: 42px; max-width: 42px; min-height: 24px; max-height: 24px; }
+            QCheckBox#switchButton::indicator { width: 40px; height: 22px; border-radius: 11px; background: #263949; bo
+rder: 1px solid #3c5668; }
+            QCheckBox#switchButton::indicator:checked { background: #00b9d4; border-color: #75efff; }
+            QSplitter::handle { background: #162433; }
+            """)
+
+    def _presets_changed(self) -> None:
+        self.settings.label_presets = self.preset_panel.presets
+        if self.project_file:
+            self.project_service.save_settings(self.project_file, self.settings)
+        self.refresh_stats()
+
+    def _apply_language(self) -> None:
+        self.operations_panel.set_language(self.settings.language)
+        self.status.setText("")
+
+    def _set_dirty(self, value: bool) -> None:
+        self.dirty = value
+        self.status.setText("鏈繚瀛樹慨鏀? if value else "")
+
+    def open_directory(self) -> None:
+        root = QFileDialog.getExistingDirectory(self, "閫夋嫨鏁版嵁闆嗙洰褰?)
+        if not root:
+            return
+        path = Path(root)
+        saved_settings = self.project_service.load_settings(path / "model_labeling.json")
+        if saved_settings.label_presets:
+            self.settings = saved_settings
+        elif self.settings.annotation_format == "yolo":
+            dataset_presets = self._load_dataset_presets(path)
+            if dataset_presets:
+                self.settings.label_presets = dataset_presets
+        try:
+            image_dir, annotation_dir = self.project_service.resolve_dataset_paths(
+                path, self.settings.annotation_format
+            )
+        except ValueError:
+            image_dir = path
+            annotation_dir = path / ("labels" if self.settings.annotation_format == "yolo" else "Annotations")
+        annotation_dir.mkdir(parents=True, exist_ok=True)
+        self.settings.image_dir = image_dir
+        self.settings.annotation_dir = annotation_dir
+        self.project_file = path / "model_labeling.json"
+        self.state.settings = self.settings
+        self.preset_panel.set_presets(self.settings.label_presets)
+        self.canvas.set_enabled_shapes(self.settings.enabled_shapes)
+        self.state.images = self.image_service.scan(image_dir, annotation_dir, self.settings)
+        self.state.current_index = 0 if self.state.images else -1
+        self.refresh_image_list()
+        if self.state.images:
+            self.image_panel.list.setCurrentRow(0)
+        self.operations_panel.update_state(None, 0, len(self.state.images), [])
+        self._apply_language()
+        self.refresh_stats()
+
+    @staticmethod
+    def _load_dataset_presets(root: Path) -> list[LabelPreset]:
+        names: list[str] = []
+        classes_path = root / "classes.txt"
+        if classes_path.exists():
+            names = [line.strip() for line in classes_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        if not names:
+            yaml_path = root / "data.yaml"
+            if yaml_path.exists():
+                import yaml
+
+                data = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+                raw_names = data.get("names", [])
+                names = list(raw_names.values()) if isinstance(raw_names, dict) else list(raw_names)
+        return [
+            LabelPreset(name, index, QColor.fromHsv((index * 47) % 360, 210, 245).name())
+            for index, name in enumerate(names)
+        ]
+
+    def refresh_image_list(self) -> None:
+        filtered = self.image_service.filter_records(
+            self.state.images,
+            self.image_panel.search.text(),
+            self.image_panel.selected_status(),
+        )
+        self.image_panel.set_records(filtered)
+
+    def select_image(self, row: int) -> None:
+        if row < 0 or row >= len(self.image_panel.records):
+            return
+        record = self.image_panel.records[row]
+        self.state.current_index = self.state.images.index(record)
+        image = QImage(str(record.path))
+        self.canvas.load_image(image, record.annotations)
+        self.canvas.set_image_info(record.path.name, row + 1, len(self.image_panel.records))
+        self.refresh_stats()
+
+    def save_current(self) -> None:
+        record = self.state.current_image
+        if record is None or self.settings.annotation_dir is None or self.project_file is None:
+            return
+        record.annotations = list(self.canvas.annotations)
+        record.status = "labeled" if record.annotations else "unlabeled"
+        try:
+            self.project_service.save_current(self.project_file, record.path, record.annotations, self.settings)
+        except (OSError, ValueError) as exc:
+            QMessageBox.critical(self, "淇濆瓨澶辫触", str(exc))
+            return
+        self._set_dirty(False)
+        self.refresh_image_list()
+        self.refresh_stats()
+        self._refresh_toolbar()
+
+    def request_image_change(self, delta: int) -> None:
+        if self.dirty and not self.settings.auto_save:
+            choice = QMessageBox.question(
+                self,
+                "鏈繚瀛樹慨鏀?,
+                "鏄惁淇濆瓨褰撳墠鏍囨敞锛?,
+                QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cance
+l,
+            )
+            if choice == QMessageBox.StandardButton.Cancel:
+                return
+            if choice == QMessageBox.StandardButton.Save:
+                self.save_current()
+        elif self.dirty and self.settings.auto_save:
+            self.save_current()
+        target = self.state.current_index + delta
+        if 0 <= target < len(self.state.images):
+            self.state.current_index = target
+            filtered = self.image_service.filter_records(self.state.images)
+            row = filtered.index(self.state.images[target]) if self.state.images[target] in filtered else -1
+            if row >= 0:
+                self.image_panel.list.setCurrentRow(row)
+
+    def previous_image(self) -> None:
+        self.request_image_change(-1)
+
+    def next_image(self) -> None:
+        self.request_image_change(1)
+
+    def refresh_stats(self) -> None:
+        if self.state.current_image:
+            self.state.current_image.annotations = list(self.canvas.annotations)
+        stats = self.state.statistics()
+        current = self.state.current_image
+        self.operations_panel.update_state(
+            current.path.name if current else None,
+            stats["labeled_images"],
+            stats["total_images"],
+            [annotation.label for annotation in current.annotations] if current else [],
+        )
+
+    def open_settings(self) -> None:
+        dialog = SettingsDialog(self.settings, self)
+        if dialog.exec() == dialog.DialogCode.Accepted:
+            self.settings = dialog.apply()
+            self.state.settings = self.settings
+            self.canvas.set_visual_settings(self.settings.line_width, self.settings.text_size)
+            self.canvas.set_enabled_shapes(self.settings.enabled_shapes)
+            self.preset_panel.set_presets(self.settings.label_presets)
+            self._apply_language()
+            if self.project_file:
+                self.project_service.save_settings(self.project_file, self.settings)
+            self._refresh_toolbar()
+            self.refresh_stats()
+
+    def open_conversion(self) -> None:
+        ConversionDialog(self.settings.label_presets, self).exec()
+
+    def open_statistics(self) -> None:
+        if not self.state.images:
+            QMessageBox.information(self, text("statistics", self.settings.language), text("no_statistics", self.settin
+gs.language))
+            return
+        StatsDialog(self.state.statistics(), self.settings.language, self).exec()
+
+    def auto_label_all(self) -> None:
+        if not self.state.images:
+            QMessageBox.information(self, "鑷姩鏍囨敞", "璇峰厛鎵撳紑鍥剧墖鐩綍")
+            return
+        if not self.settings.onnx_model_path:
+            QMessageBox.information(self, "鑷姩鏍囨敞", "璇峰厛鍦ㄩ」鐩缃腑閫夋嫨 ONNX 妯″瀷")
+            return
+        self._set_auto_labeling(True)
+        self.auto_thread = QThread(self)
+        self.auto_worker = AutoLabelWorker(self.state.images, self.settings)
+        self.auto_worker.moveToThread(self.auto_thread)
+        self.auto_thread.started.connect(self.auto_worker.run)
+        self.auto_worker.progress.connect(
+            lambda current, total: self.status.setText(f"鑷姩鏍囨敞涓? {current}/{total}")
+        )
+        self.auto_worker.finished.connect(self._auto_label_finished)
+        self.auto_worker.failed.connect(self._auto_label_failed)
+        self.auto_worker.finished.connect(self.auto_thread.quit)
+        self.auto_worker.failed.connect(self.auto_thread.quit)
+        self.auto_thread.finished.connect(self._auto_thread_finishe…1902 tokens truncated…one:
+        super().__init__(parent)
+        self.scene = QGraphicsScene(self)
+        self.setScene(self.scene)
+        self.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self.setBackgroundBrush(QColor("#10151c"))
+        self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
+        self.image_item: QGraphicsPixmapItem | None = None
+        self.annotation_items: list[AnnotationItem] = []
+        self.annotations: list[Annotation] = []
+        self.mode = ShapeType.RECTANGLE
+        self.current_label = "object"
+        self.current_color = "#00e5ff"
+        self.line_width = 2
+        self.text_size = 14
+        self.drawing = False
+        self.start = QPointF()
+        self.preview: QGraphicsPolygonItem | None = None
+        self.polygon_points: list[QPointF] = []
+        self.pan_mode = False
+        self.enabled_shapes = set(ShapeType)
+        self.image_info = QLabel(self)
+        self.image_info.setObjectName("imageInfoOverlay")
+        self.image_info.hide()
+
+    def set_image_info(self, name: str, position: int, total: int) -> None:
+        self.image_info.setText(f"{name}   路   绗?{position} / {total} 寮?)
+        self.image_info.adjustSize()
+        self.image_info.move(14, 14)
+        self.image_info.show()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self.image_info.move(14, 14)
+
+    def load_image(self, image: QImage, annotations: list[Annotation]) -> None:
+        self.scene.clear()
+        self.annotation_items.clear()
+        self.annotations = annotations
+        self.image_item = self.scene.addPixmap(QPixmap.fromImage(image))
+        self.image_item.setZValue(-1)
+        for annotation in annotations:
+            self._add_annotation_item(annotation)
+        self.setSceneRect(self.image_item.boundingRect())
+        self.fitInView(self.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+        self.dirtyChanged.emit(False)
+
+    def set_mode(self, mode: ShapeType) -> None:
+        if mode not in self.enabled_shapes:
+            return
+        self.mode = mode
+        self.cancel_drawing()
+
+    def set_enabled_shapes(self, shapes) -> None:
+        self.enabled_shapes = set(shapes)
+        if self.mode not in self.enabled_shapes:
+            self.mode = next(iter(self.enabled_shapes), ShapeType.RECTANGLE)
+
+    def set_current_label(self, label: str, color: str) -> None:
+        self.current_label, self.current_color = label, color
+
+    def set_visual_settings(self, line_width: int, text_size: int) -> None:
+        self.line_width, self.text_size = line_width, text_size
+
+    def zoom_in(self) -> None:
+        self.scale(1.2, 1.2)
+
+    def zoom_out(self) -> None:
+        self.scale(1 / 1.2, 1 / 1.2)
+
+    def fit_image(self) -> None:
+        if self.image_item:
+            self.fitInView(self.image_item, Qt.AspectRatioMode.KeepAspectRatio)
+
+    def cancel_drawing(self) -> None:
+        self.drawing = False
+        self.polygon_points.clear()
+        if self.preview:
+            self.scene.removeItem(self.preview)
+            self.preview = None
+
+    def _add_annotation_item(self, annotation: Annotation) -> None:
+        item = AnnotationItem(annotation, self.text_size, self.line_width)
+        self.scene.addItem(item)
+        self.annotation_items.append(item)
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.MiddleButton or self.pan_mode:
+            self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+            super().mousePressEvent(event)
+            return
+        if event.button() != Qt.MouseButton.LeftButton or not self.image_item:
+            super().mousePressEvent(event)
+            return
+        point = self.mapToScene(event.position().toPoint())
+        if self.mode == ShapeType.POLYGON:
+            self.polygon_points.append(point)
+            self.drawing = True
+            return
+        self.start = point
+        self.drawing = True
+
+    def mouseMoveEvent(self, event) -> None:
+        if self.drawing and self.mode != ShapeType.POLYGON:
+            current = self.mapToScene(event.position().toPoint())
+            rect = constrain_square(self.start, current) if self.mode == ShapeType.SQUARE else normalize_rect(self.star
+t, current)
+            if self.preview:
+                self.scene.removeItem(self.preview)
+            self.preview = self.scene.addPolygon(QPolygonF(rect), QPen(QColor(self.current_color), self.line_width, Qt.
+PenStyle.DashLine))
+            self.preview.setZValue(1)
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.MiddleButton or self.pan_mode:
+            super().mouseReleaseEvent(event)
+            self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
+            return
+        if self.drawing and self.mode != ShapeType.POLYGON and event.button() == Qt.MouseButton.LeftButton:
+            current = self.mapToScene(event.position().toPoint())
+            rect = constrain_square(self.start, current) if self.mode == ShapeType.SQUARE else normalize_rect(self.star
+t, current)
+            if rect.width() >= 3 and rect.height() >= 3:
+                annotation = Annotation(
+                    self.mode,
+                    self.current_label,
+                    [rect.topLeft(), rect.bottomRight()],
+                    self.current_color,
+                )
+                self.annotations.append(annotation)
+                self._add_annotation_item(annotation)
+                self.annotationCreated.emit(annotation)
+                self.dirtyChanged.emit(True)
+            self.cancel_drawing()
+            return
+        super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        if self.mode == ShapeType.POLYGON and len(self.polygon_points) >= 3:
+            annotation = Annotation(ShapeType.POLYGON, self.current_label, list(self.polygon_points), self.current_colo
+r)
+            self.annotations.append(annotation)
+            self._add_annotation_item(annotation)
+            self.annotationCreated.emit(annotation)
+            self.dirtyChanged.emit(True)
+            self.cancel_drawing()
+            return
+        super().mouseDoubleClickEvent(event)
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_Escape:
+            self.cancel_drawing()
+        elif event.key() == Qt.Key.Key_Delete:
+            selected = [item for item in self.annotation_items if item.isSelected()]
+            for item in selected:
+                if item.annotation in self.annotations:
+                    self.annotations.remove(item.annotation)
+                self.scene.removeItem(item)
+                self.annotation_items.remove(item)
+            if selected:
+                self.annotationDeleted.emit()
+                self.dirtyChanged.emit(True)
+        elif event.key() == Qt.Key.Key_Plus or event.key() == Qt.Key.Key_Equal:
+            self.zoom_in()
+        elif event.key() == Qt.Key.Key_Minus:
+            self.zoom_out()
+        elif event.key() == Qt.Key.Key_0:
+            self.fit_image()
+        else:
+            super().keyPressEvent(event)
+
+from __future__ import annotations
+
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QProgressBar, QPushButton, QVBoxLayout, QWidget
+
+from .i18n import text
+
+
+class OperationsPanel(QWidget):
+    def __init__(self, language: str = "zh_CN", parent=None) -> None:
+        super().__init__(parent)
+        self.language = language
+        self.title_label = QLabel(text("operations", language))
+        self.title_label.setObjectName("panelTitle")
+        self.file_label = QLabel(text("no_image", language))
+        self.file_label.setObjectName("operationFile")
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.setTextVisible(False)
+        self.progress_text = QLabel(text("progress", language))
+        self.labels_label = QLabel(text("none", language))
+        self.labels_label.setWordWrap(True)
+        self.labels_label.setObjectName("operationLabels")
+
+        self.navigation_toolbar = QWidget(self)
+        nav_layout = QHBoxLayout(self.navigation_toolbar)
+        nav_layout.setContentsMargins(0, 0, 0, 0)
+        self.previous_button = QPushButton(text("previous", language))
+        self.next_button = QPushButton(text("next", language))
+        self.zoom_in_button = QPushButton(text("zoom_in", language))
+        self.zoom_out_button = QPushButton(text("zoom_out", language))
+        self.fit_button = QPushButton(text("fit", language))
+        self.previous_button.setShortcut("Left")
+        self.next_button.setShortcut("Right")
+        self.zoom_in_button.setShortcut("+")
+        self.zoom_out_button.setShortcut("-")
+        self.fit_button.setShortcut("0")
+        for button in (
+            self.previous_button,
+            self.next_button,
+            self.zoom_in_button,
+            self.zoom_out_button,
+            self.fit_button,
+        ):
+            nav_layout.addWidget(button)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+        layout.addWidget(self.title_label)
+        layout.addWidget(self.file_label)
+        layout.addWidget(self.progress_text)
+        layout.addWidget(self.progress)
+        layout.addWidget(self.labels_label)
+        layout.addWidget(self.navigation_toolbar)
+
+    def set_language(self, language: str) -> None:
+        self.language = language
+        self.title_label.setText(text("operations", language))
+        self.progress_text.setText(text("progress", language))
+        self.previous_button.setText(text("previous", language))
+        self.next_button.setText(text("next", language))
+        self.zoom_in_button.setText(text("zoom_in", language))
+        self.zoom_out_button.setText(text("zoom_out", language))
+        self.fit_button.setText(text("fit", language))
+
+    def update_state(self, filename: str | None, labeled: int, total: int, labels: list[str]) -> None:
+        if not filename:
+            self.file_label.setText(text("no_image", self.language))
+        else:
+            self.file_label.setText(f"{text('current_file', self.language)}: {filename}")
+        percent = int(labeled / total * 100) if total else 0
+        self.progress.setValue(percent)
+        self.progress_text.setText(f"{text('progress', self.language)}  {percent}% ({labeled}/{total})")
+        self.labels_label.setText(
+            f"{text('current_labels', self.language)}: {', '.join(labels) if labels else text('none', self.language)}"
+        )
+
+
+Exit code: 0
+Wall time: 0.3 seconds
+Output:
+from src.models.project import ProjectSettings
+from src.widgets.main_window import MainWindow
+
+
+def test_main_window_hides_save_action_when_auto_save_is_enabled(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.settings.auto_save = True
+    window._refresh_toolbar()
+
+    assert not window.save_action.isVisible()
+
+
+def test_main_window_moves_navigation_into_annotation_operations_panel(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    assert window.operations_panel.title_label.text() == "鏍囨敞鎿嶄綔"
+    assert window.navigation_toolbar.parent() is window.operations_panel
+
+from PySide6.QtWidgets import QInputDialog
+
+from src.models.annotation import LabelPreset
+from src.widgets.preset_panel import PresetPanel
+
+
+def test_delete_selected_preset_removes_it(qtbot):
+    panel = PresetPanel()
+    qtbot.addWidget(panel)
+    panel.set_presets([LabelPreset("cat", 0, "#ffffff"), LabelPreset("dog", 1, "#00e5ff")])
+    panel.list.setCurrentRow(0)
+
+    panel.delete_selected()
+
+    assert [preset.name for preset in panel.presets] == ["dog"]
+
+
+def test_edit_selected_preset_updates_name(qtbot, monkeypatch):
+    panel = PresetPanel()
+    qtbot.addWidget(panel)
+    panel.set_presets([LabelPreset("cat", 0, "#ffffff")])
+    panel.list.setCurrentRow(0)
+    monkeypatch.setattr(QInputDialog, "getText", lambda *args, **kwargs: ("kitten", True))
+    monkeypatch.setattr(QInputDialog, "getInt", lambda *args, **kwargs: (0, True))
+
+    panel.edit_selected()
+
+    assert panel.presets[0].name == "kitten"
+
+
+def test_preset_panel_uses_label_settings_title_and_grid_items(qtbot):
+    panel = PresetPanel()
+    qtbot.addWidget(panel)
+    panel.set_presets(
+        [
+            LabelPreset("cat", 0, "#ffffff"),
+            LabelPreset("dog", 1, "#00e5ff"),
+        ]
+    )
+
+    assert panel.title_label.text() == "鏍囩璁剧疆"
+    assert panel.grid.count() == 2
+    assert panel.grid.itemAt(0).widget().property("label_color") == "#ffffff"
+
+
+def test_preset_panel_uses_compact_chinese_add_button_and_tall_white_items(qtbot):
+    panel = PresetPanel()
+    qtbot.addWidget(panel)
+    panel.set_presets([LabelPreset("cat", 0, "#ffffff")])
+
+    item = panel.grid.itemAt(0).widget()
+    assert panel.add_button.text() == "鏂板"
+    assert item.minimumHeight() >= 50
+    assert item.property("label_color") == "#ffffff"
+
+"}],"internal_chat_message_metadata_passthrough":{"turn_id":"01a01e5c-d03e-7532-97db-c3a655073021"}}}
+{"timestamp":"2026-08-20T08:50:10.720Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":
+{"input_tokens":12370469,"cached_input_tokens":9863076,"cache_write_input_tokens":0,"output_tokens":99031,"reasoning_ou
+tput_tokens":6749,"total_tokens":12469500},"last_token_usage":{"input_tokens":77870,"cached_input_tokens":70656,"cache_
+write_input_tokens":0,"output_tokens":325,"reasoning_output_tokens":0,"total_tokens":78195},"model_context_window":2584
+00},"rate_limits":{"limit_id":"codex","limit_name":null,"primary":null,"secondary":null,"credits":null,"individual_limi
+t":null,"spend_control_reached":null,"plan_type":null,"rate_limit_reached_type":null}}}
+{"timestamp":"2026-08-20T08:50:40.509Z","type":"event_msg","payload":{"type":"agent_reasoning","text":"**Planning label
+ group redesign**"}}
+{"timestamp":"2026-08-20T08:50:40.526Z","type":"event_msg","payload":{"type":"agent_reasoning","text":"**Removing toolb
+ar and adding label group dataclass**"}}
+{"timestamp":"2026-08-20T08:50:40.526Z","type":"event_msg","payload":{"type":"agent_reasoning","text":"**Deciding to pr
+eserve mojibake title for tests**"}}
+{"timestamp":"2026-08-20T08:50:40.526Z","type":"response_item","payload":{"type":"reasoning","id":"rs_0731ab38e71486df0
+16a86bfd5912087d083f0ad2a55a6f183","summary":[{"type":"summary_text","text":"**Planning label group redesign**"},{"type
+":"summary_text","text":"**Removing toolbar and adding label group dataclass**"},{"type":"summary_text","text":"**Decid
+ing to preserve mojibake title for tests**"}],"encrypted_content":"gAAAAABqhr_fdrOMQzFPs8tKLhqJz7fl59KOrXxIBfAvwLTlchCa
+3PI870D-NyPqN0bhqfpUdvP7nHei3z7_DpxMfZF1MOmVLApcESCqsMf31Z7SZJ5e8BScNQboAR3mtsVwvrEBoByFjgp9O9kCA7_Afzn_453rTk-zeRpPN6t
+MutOT1XsukOEEPdG0wKl82seP5GpwCdg5G00StPqGShTE9HwkmeL95fDWSj2R8LP6ZCdEJV8TTTYAomtIOOfmDMVxaZzL85jmp5NJl_8WwTIkv44f7cF47D
+7ZLQr1wZJddG3QHBvpxhKmKKGl5cQD2q4SNLWxXMIy4PoZUy8LwBW1DkEPePKS2bfwKkS2peB2tUfalkF5wg3T34emeB8PMAQoduAT03uQ8G1diQn-Izggy
+oeyNPniz2oHXFrwVTUC0-yMqHSSSJZYTJtU8rMRWM-RpIV6cUkWv1hwhRTCybWvXPVk3GJ89g7fz4iWIq95bJC1cF11z_POq0lfnE7qDo4D8O7Nh6jFqCSl
+FtNMunovj0YzzI9UfNL2gvbNqfO2w6yxpcUvuWFJ-15U_b5F0pXu6217CDcmVld-K4uVBcRm9QiXQGEajGJSaI2hynbuLRqH473aeU3apWvNd-_ElnT24B-
+Cdri7GAP8eQ3lerdiHDCnbB1XR8VJD8rCY_VtXEqH35Zsv4EZXbULA3C4gc9c_gewzIeGfnpMOJH9NyghJg0C_cYgKV1YsJKcIfxN2rzvahQ2qZxRHvgAJb
+suzpSUiDfAE9_nZfwjRJs03SfQZD-XLJneTVo2Fh4RK1rA3QwIZk0vzhitygj1gzceUN_X6uCDvs_bMdw8Q0wGPJDkTrH99s0dEsymQw3FoKrfb1DRZcrbW
+C9D7QUw9jmROkE3mjSBl6bNQxiboLANJmhyJBdTlx4w200ad9SSDTYMhzrnvKr2BoFuGJYOb7TCiT4NxuC4nnmK5x_yVRLgPnaFVRS9g1vDpUftQ7o6PNrP
+hfyX_LlTXt19OppBZuUOjE91QxFdXP_scgS4qC6ibY5maxUMsvdJ9iAEqya42JIljN0YUorM_VRypU3____ZuauGsNRNF5cle6zw_KBl3qNTxscZmrpzI2H
+eTw_kwxrKUYCF3SMTb4Y8fOoliQ2_jzTs271Vw3dR4VObE8ewVoeOy-rG5WCk9zFOEfmumTo77m0ytwcn00E2VYBT8UJiGJ6DDJNb7lGzuFUEgXIOXaa_EU
+T56AdLTgzJnt3LdfO9QWbsFsuAiHKcXvsP-0czrqsL3H4WARsxcCabpX44pJRnjUO3M4E1wd3ctJ5Ccmgd-c8eFCAXDU5BLGekpou2orW9ID6XkW_1nVdRQ
+fKAdH_XHYUbsbIUuY2fqoPRaDUdpJVJQHCxcPR8m1LfnQvwQSYKHh1qqeH9N_0O6lbYtQKOLsPHABmtZ8829IjbDJW4MwH5ns4K46fQXQiQdHsDZSemjFs3
+EW_TsL_-B22Nt2l3WXJvhzRLH2O7rDDHZsmtrQhBGU7zC7N7LzvLM67nKLKzPRviZlkjxXTDQNoSE6JxohknIJ8mWK-YPy49_0qhsRr85_fe8YTCReX3dWU
+XqvsIjk2sn4lMErcvLKJvA8URNaLSQfAyPPqqVMzmGMYWFLPOO0O9zYTMggC5ILLZe5HFc-oCTbxQOCPRpHPFLwqUsblDH_PDd1gfoFP_nykpFZgrRvv1gk
+LG-IC3-0-8Orz1Pl6vlJFBglaMlhvHZwkExJ050-u4hg4Y2N2Zwu26bcfcnenL5VfMkfEHKhEjbQ5j_MCS9WYlRDAFIrTS92ePNcucyp5MphlM6ZMqml3Q5
+eyIlBsT8NzVD9825BcZ70pE8_uwxqResBflAgh8MAvrWgoAug8zJVsfGPkWJppQ-cP_JibKudSygCUxSnoh7gNJmxhtj7DKmvt0lEfCiHW64CZaTGboVWto
+D7eMWkuD7hRgxZE57bRgdCYo7vOW0OkNVvVACla32R0bkL_T3DWBJ8uBYEvQ9F5qN4N4kvWy8vAsHsA9ZoTO4UvJKgFY3eYVA4OYI6ggoUca9DPHANB4Yz-
+H-b27WFo1xwDJFOvKB9T7G8_nNxKw9R5EKkO5lODktHPU5VKdao-RUcLrn3SuXi97DXQgh50L9QnaelJ1lh-aLxiUEO11-VhqHmqFcf4kT55UQJeVOZ9Z0I
+PHYfR_m245evQvVEsvqS4h0RBJLeh2EHt0BWdwBC3jDMgRKvEd4B_MTw3GYVfphld1QuT_6g1rRSH302SFUqzBgiTkdpiJi_Di53vdnrllu0lCvtUC0qP_A
+E_PqXJmg_x4HbDGe9kSeL-6vBs4kcevnh-RGuawzyMezqikA2h4HrPJPsmSjTJvxZgBVXe9GozkYWAdhZOlDR1v7pz6uuZ6mXNLAolsKbYqJy1yyBDB4pgf
+Iw7R9GBxI4y-gM12bo0fE3DAz_XEUxJzVqqYlw2asKPHW7NOqUPbviGAwScJ2XLD2wn9wHWwFq2sMYBsITZOE-iWqYmgxd0JCLswbPCF4EBbV48-7h2JagB
+H3v1jT3mOmqhLEjXOrZLSucJjeHs0Elogf1dtAMTuCDAYVpzsx1iqda6wnC1s-u8GOkmzjGp9JJjWALHpmUm_7RdVGJ0FLueSvq4JQMc0Kv5ZT6W7yFDk7P
+oCHR5BhNgog3OemNhn-8ZKXSMz6Eg47-rs5V71XkTemLw3xCwsY3199_JM2HTv5bSrj8o_f60dcLx5otqGLDtk8fG4t7_SnXmnqo_zXQoN1itcEGtINEJQm
+lxs2KPSMlUqEMrcAQGWMcuMyKOtp66FkcuhUsyyhAVm0PS3VWtW6J740zTawj5JfieWFG0I8WISMI1MluMCWAuy-ocKfDPdPBzwFu2SU9eYj6kyFRVSjquG
+UllewuSwsnzAYvHkEhkUwvHSHQnPZBvcxkkl9ho69W1gsVk8vMQBOIBFanphHCduEdARV_coNlq9bo7ul3_JwQAFlr7zDRMYHaWN0uyT7lgZkuXh2Y3Y3Aa
+Hj8OBIreHDEfr9Tunz30BzTN2_pmDiwYupMhTGSAeYMmSg5Uzwcx1qrZfdoUxrmwMP83LxA1qnU1h94MdIr-e6WqtpjsGtr7hT8gtPIcplhJHg2ZMqcb1rO
+FYnqbd2u41kmCXxD4CDfrtts0bqcAkaPfjyw31f4MY5NfsssQIVB9cUbCscrEyIoWFP4SwCmjp0DsBGQ6_R3wWiO97taalnR-4sbawzWrW6gpitActx3_v7
+njSGKa2vczmHub449sR1xjQqakDY8z7WnOpjFT9ebkg0LbX5nCSP-aoqqac-zAhg-vB2DoFsA3l_mgpFhoerTdHf4aAMORt7bKB9CAL3FWiAKKoXMBQO_zo
+3DcVo4IIoY5RtjT-yYQfKn8XakDFN2dRQs9_5xHbUh5XYQWcXHYd19388Gr0GJFzjE6FmPYsbnWQKIturrF_rD-CYhsnZCDMvmiprfRE_JG8Ja-ce2G8E5u
+NpVQNCxZFFILwFlGnGLV8at98-Im9WnWHPihp34c9A5I5RqKTAEDruTqCqa_JsjlIcmjIXZoruZX9WhzI29RFVIF7InB7WT3MFJllU_hkA8cAe8QT9u8_IR
+NrhXHsWeUOlhsDdp9xqIxqvmfTdToBwdGoL-uN4OP7XVmw0pKV13frFpvt6qpiJ8wxiqibvF1mpls2QggasxSaOOGT2de_vr4b5-lADoDG7IP0k17YL4aTe
+3csz7MMmhZbL3P7WToptohiGRXJOdif3guQRDfEIj-lu1IqdxC1whXCFmIjsF35wZnPKZlJRaQp9jWTxPbtmY0_GWBvJ17s7w9e1ZIbQANmS-0FTEjoP9Si
+hU5-l99SQPTubSwszr1Xo1hi6Zcf9XqUOP8F5TOBYf2v1qCbx7EjKdOlVbP-tGLREBh72Ut7QawULkosMSUMUKtdjkc7Fv49y1HqrEqs3aXXPivb6sxto0l
+in-c9zw6tr3zInaj4-3qihMEicgaUp4iLhaUsDLrymBiaQpRt6BvBkW2iGpPVJwlFJhJEqr8tBvKxvtiX48isYWhaZaV5fkvHhCRYIGbK2hEiqcIjdgCZ05
+_m34p5tIsqpl0m1lbtRpvIIrgd4rRpYdKG7_8GN4OXu6LVSxLHGhlRw8BHoCA3Sa0G_QyjPvFQRo25QYZThoCGbkZ3LUfq3Kqj9QERmcMYcwBXKvMSllOYn
+-8QK_ETvHEFY5s4v8XtZuGk0rFOy_SK_12AcuuztWBU8ce3-p0DmsrAsva5tpQBDf7Bgcw2HT5TrZQMdExE3bZAZ0F5ZtCEiJWj7Ji4KmlMofU3rf0dq7ii
+yAxurn_lNaZCGt_t5r6WKRkt6xjv26kXgI7ULMsaYPZixdwCrLl8cODtVLhZYv54Xvsfy2WnDVhTjqMPt9Te79uuZiLaBmXsi2BUgx9ziA8g-JIFCNN1jmT
+P4BXe3sps7Dtmebe-hYFm_2tC_PMHlF1VoVTtKAqP9Mwhwa9mwfoPot8vim7T9J0Ulgotlr15C03NEhvfMdGmlFL3nzcv0wwvvZ0iBAtLKJPjbabBIKgw3X
+EXsqaYtD-LHRuNePkVLBwJeT8_5mXUm1wy6qKbSYKVtJti0e24iprhoMejFbFzf-yx45j9n0YtYckPVo94zLdTddjfJMP8qoiOn214qIIGa8-O_QGeX7HOC
+8GtazgJKh8OHjxWnjUmYVI18gzox-b8T9E589nhOMAORWZaA27qjSvCxQU1QfHShd-0NFxsmjOIsOJToE1Bjh7YYgubhTgg7zZiA1uTnoSOIUzB5z826k3g
+lZ5e-U5QGQgPxLZNC0-bskVPXQLatz86dzA3XUvHUJZYelv_7_cuLEZYeGK37WRN
+
+

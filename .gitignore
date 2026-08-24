@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+backups/
+*.png
+*.log
+.record_stop
+model_labeling.json
