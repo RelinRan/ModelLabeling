@@ -1285,6 +1285,10 @@ class MainWindow(QMainWindow):
                 self.settings.dataset_task = "yolo_pose"
             self._apply_annotation_capabilities()
             self.canvas.set_keypoint_schema(keypoint_names)
+        elif task in {"segment", "segmentation"} and self.settings.annotation_format in {"yolo", "coco"}:
+            if self.settings.annotation_format == "yolo":
+                self.settings.dataset_task = "yolo_segmentation"
+            self._apply_annotation_capabilities()
 
     def _auto_annotation_ready(self, path: str, annotations: list[Annotation]) -> None:
         """Commit worker output on the GUI thread instead of mutating records in a worker."""

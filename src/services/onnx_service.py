@@ -87,9 +87,18 @@ class YoloOnnxDetector:
         resized = rgb.resize((input_width, input_height))
         array = np.asarray(resized, dtype=np.float32) / 255.0
         array = np.transpose(array, (2, 0, 1))[None, ...]
-        output = self.session.run(None, {input_name: array})[0]
+        outputs = self.session.run(None, {input_name: array})
+        output = outputs[0]
         if self.task == "pose":
             return self._predict_pose(output, original_width, original_height, input_width, input_height, presets, confidence_threshold, nms_threshold)
+        if self.task in {"segment", "segmentation"}:
+            if len(outputs) < 2:
+                raise ValueError("YOLO Segmentation model must provide detection and prototype outputs")
+            return self._predict_segmentation(
+                output, outputs[1], original_width, original_height,
+                input_width, input_height, presets,
+                confidence_threshold, nms_threshold,
+            )
         rows = self._decode_output(np.asarray(output), len(presets))
         candidates = []
         for x1, y1, x2, y2, score, class_id in rows:
@@ -124,6 +133,95 @@ class YoloOnnxDetector:
                 )
             )
         return results
+
+    def _predict_segmentation(
+        self,
+        output: np.ndarray,
+        prototypes: np.ndarray,
+        original_width: int,
+        original_height: int,
+        input_width: int,
+        input_height: int,
+        presets: list[LabelPreset],
+        confidence_threshold: float,
+        nms_threshold: float,
+    ) -> list[Annotation]:
+        import cv2
+
+        proto = np.asarray(prototypes)
+        if proto.ndim == 4:
+            proto = proto[0]
+        if proto.ndim != 3:
+            raise ValueError(f"unsupported YOLO Segmentation prototype shape: {proto.shape}")
+        mask_channels, mask_height, mask_width = proto.shape
+        data = np.asarray(output)
+        if data.ndim == 3:
+            data = data[0]
+        if data.ndim != 2:
+            raise ValueError(f"unsupported YOLO Segmentation output shape: {data.shape}")
+        class_count = len(self.class_names) or len(presets)
+        raw_width = 4 + class_count + mask_channels
+        end_to_end_width = 6 + mask_channels
+        if data.shape[0] in {raw_width, end_to_end_width} and data.shape[1] not in {raw_width, end_to_end_width}:
+            data = data.T
+        candidates = []
+        for row in data:
+            if len(row) == end_to_end_width:
+                x1, y1, x2, y2, score, raw_class = map(float, row[:6])
+                class_id = int(raw_class)
+                coefficients = row[6:]
+            elif len(row) == raw_width:
+                x, y, width, height = map(float, row[:4])
+                scores = row[4:4 + class_count]
+                class_id = int(np.argmax(scores)) if len(scores) else 0
+                score = float(scores[class_id]) if len(scores) else 1.0
+                x1, y1, x2, y2 = x - width / 2, y - height / 2, x + width / 2, y + height / 2
+                coefficients = row[4 + class_count:]
+            else:
+                raise ValueError(f"unsupported YOLO Segmentation row width: {len(row)}")
+            if score >= confidence_threshold and 0 <= class_id < len(presets):
+                candidates.append((x1, y1, x2, y2, float(score), class_id, np.asarray(coefficients)))
+        selected = self._nms(candidates, nms_threshold)
+        sx, sy = original_width / input_width, original_height / input_height
+        results = []
+        flattened = proto.reshape(mask_channels, -1)
+        for x1, y1, x2, y2, score, class_id, coefficients in selected:
+            if max(abs(x1), abs(y1), abs(x2), abs(y2)) <= 1.5:
+                x1, x2 = x1 * input_width, x2 * input_width
+                y1, y2 = y1 * input_height, y2 * input_height
+            logits = coefficients @ flattened
+            mask = (1.0 / (1.0 + np.exp(-np.clip(logits, -80, 80)))).reshape(mask_height, mask_width)
+            mask = cv2.resize(mask, (input_width, input_height), interpolation=cv2.INTER_LINEAR)
+            binary = np.zeros_like(mask, dtype=np.uint8)
+            left, top = max(0, int(x1)), max(0, int(y1))
+            right, bottom = min(input_width, int(np.ceil(x2))), min(input_height, int(np.ceil(y2)))
+            if right <= left or bottom <= top:
+                continue
+            binary[top:bottom, left:right] = (mask[top:bottom, left:right] >= 0.5).astype(np.uint8)
+            contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            parts = [
+                [QPointF(float(point[0][0]) * sx, float(point[0][1]) * sy) for point in contour]
+                for contour in contours
+                if len(contour) >= 3 and cv2.contourArea(contour) > 1.0
+            ]
+            if not parts:
+                continue
+            parts.sort(key=lambda part: abs(self._polygon_area(part)), reverse=True)
+            preset = presets[class_id]
+            results.append(Annotation(
+                ShapeType.POLYGON, preset.name, parts[0],
+                color=label_color(preset.name), confidence=score,
+                source="onnx", polygon_parts=parts,
+            ))
+        return results
+
+    @staticmethod
+    def _polygon_area(points: list[QPointF]) -> float:
+        return sum(
+            points[index].x() * points[(index + 1) % len(points)].y()
+            - points[(index + 1) % len(points)].x() * points[index].y()
+            for index in range(len(points))
+        ) / 2.0
 
     def _predict_pose(
         self,

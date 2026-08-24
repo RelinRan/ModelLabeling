@@ -252,6 +252,12 @@ class AutoLabelWorker(QObject):
                     )
             if detector.task == "pose" and self.settings.annotation_format == "yolo":
                 self.settings.dataset_task = "yolo_pose"
+            elif detector.task in {"segment", "segmentation"} and self.settings.annotation_format == "yolo":
+                self.settings.dataset_task = "yolo_segmentation"
+            if detector.task in {"pose", "segment", "segmentation"} and self.settings.annotation_format == "voc":
+                raise ValueError(
+                    "Pascal VOC does not support ONNX pose or segmentation annotations"
+                )
             model_presets = self._model_presets(detector.class_names)
             self.settings.label_presets = model_presets
             self.modelReady.emit(

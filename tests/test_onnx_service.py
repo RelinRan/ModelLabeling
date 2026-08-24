@@ -60,3 +60,42 @@ def test_end_to_end_pose_output_remains_supported():
 
     assert len(annotations) == 1
     assert len(annotations[0].keypoints) == 2
+
+
+def test_raw_segmentation_output_decodes_polygon_mask():
+    # One class and one prototype channel: [cx, cy, w, h, score, coefficient].
+    detections = np.array([320, 320, 320, 320, 0.95, 10.0], dtype=np.float32).reshape(1, -1, 1)
+    prototypes = np.full((1, 1, 160, 160), -10.0, dtype=np.float32)
+    prototypes[0, 0, 50:110, 50:110] = 1.0
+    session = _Session(detections)
+    session.run = lambda names, values: [detections, prototypes]
+    detector = YoloOnnxDetector(session)
+    detector.task = "segment"
+    detector.class_names = ["person"]
+
+    annotations = detector.predict(
+        Image.new("RGB", (1280, 720)),
+        [LabelPreset("person", 0, "#00e5ff")],
+        640, 0.25, 0.45,
+    )
+
+    assert len(annotations) == 1
+    assert annotations[0].shape_type == ShapeType.POLYGON
+    assert len(annotations[0].points) >= 4
+    assert all(0 <= point.x() <= 1280 and 0 <= point.y() <= 720 for point in annotations[0].points)
+
+
+def test_segmentation_requires_prototype_output():
+    detector = YoloOnnxDetector(_Session(np.zeros((1, 6, 1), dtype=np.float32)))
+    detector.task = "segment"
+    detector.class_names = ["person"]
+
+    try:
+        detector.predict(
+            Image.new("RGB", (640, 640)),
+            [LabelPreset("person", 0, "#00e5ff")], 640,
+        )
+    except ValueError as error:
+        assert "prototype" in str(error)
+    else:
+        raise AssertionError("segmentation without prototypes must fail")

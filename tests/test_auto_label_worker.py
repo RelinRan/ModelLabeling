@@ -45,6 +45,36 @@ def test_pose_task_only_switches_yolo_dataset(monkeypatch, tmp_path):
         assert worker.settings.dataset_task == expected_task
 
 
+def test_segmentation_task_only_switches_yolo_dataset(monkeypatch, tmp_path):
+    class Detector:
+        task = "segment"
+        keypoint_names = []
+        class_names = ["person"]
+
+        def load(self, path):
+            return None
+
+    monkeypatch.setattr("src.services.workers.YoloOnnxDetector", Detector)
+    cases = (
+        ("yolo", "yolo_segmentation", False),
+        ("coco", "coco", False),
+        ("voc", "voc", True),
+    )
+    for annotation_format, expected_task, should_fail in cases:
+        settings = ProjectSettings(
+            annotation_format=annotation_format,
+            dataset_task=expected_task if annotation_format != "yolo" else "yolo_detection",
+            onnx_model_path=Path(tmp_path / "model.onnx"),
+            label_presets=[LabelPreset("person", 0, "#00e5ff")],
+        )
+        worker = AutoLabelWorker([], settings)
+        errors = []
+        worker.failed.connect(errors.append)
+        worker.run()
+        assert worker.settings.dataset_task == expected_task
+        assert bool(errors) is should_fail
+
+
 def test_auto_label_rejects_mismatched_yolo_class_schema(monkeypatch, tmp_path):
     class Detector:
         task = "detect"
