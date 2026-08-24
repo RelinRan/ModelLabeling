@@ -26,6 +26,7 @@ from src.services.project_service import ProjectService
 from src.services.operation_coordinator import OperationCoordinator
 from src.services.dataset_session import DatasetScanResult, DatasetSession
 from src.services.onnx_service import YoloOnnxDetector
+from src.services.workers import AutoLabelWorker, DatasetAnnotationSaveWorker, DatasetCountWorker, SaveWorker, SingleImageAnnotationWorker
 from src.services.format_capabilities import CAPABILITIES, task_for_format
 from .annotation_edit_dialog import AnnotationEditDialog
 from .common_dialogs import AppDialog
@@ -59,7 +60,7 @@ def default_label_presets() -> list[LabelPreset]:
     return [LabelPreset(name, index, QColor.fromHsv((index * 47) % 360, 210, 245).name()) for index, name in enumerate(DEFAULT_LABEL_NAMES)]
 
 
-class DatasetCountWorker(QObject):
+class _LegacyDatasetCountWorker(QObject):
     finished = Signal(int, str)
 
     def __init__(self, image_dir: Path, session_id: str) -> None:
@@ -77,7 +78,7 @@ class DatasetCountWorker(QObject):
         self.finished.emit(total, self.session_id)
 
 
-class SingleImageAnnotationWorker(QObject):
+class _LegacySingleImageAnnotationWorker(QObject):
     finished = Signal(str, int, int, str, object, str)
 
     def __init__(self, record: ImageRecord, image_dir: Path, annotation_dir: Path, settings: ProjectSettings) -> None:
@@ -529,7 +530,7 @@ class DatasetScanWorker(QObject):
         return [LabelPreset(name, index, colors[index] if index < len(colors) else QColor.fromHsv((index * 47) % 360, 210, 245).name()) for index, name in enumerate(names)]
 
 
-class AutoLabelWorker(QObject):
+class _LegacyAutoLabelWorker(QObject):
     progress = Signal(int, int)
     modelReady = Signal(str, object)
     annotationReady = Signal(str, object)
@@ -580,7 +581,7 @@ class AutoLabelWorker(QObject):
             self.failed.emit(str(exc))
 
 
-class SaveWorker(QObject):
+class _LegacySaveWorker(QObject):
     finished = Signal(str)
 
     def __init__(self, project_path, image_path, annotations, settings) -> None:
@@ -594,7 +595,7 @@ class SaveWorker(QObject):
             self.finished.emit(str(exc))
 
 
-class DatasetAnnotationSaveWorker(QObject):
+class _LegacyDatasetAnnotationSaveWorker(QObject):
     finished = Signal(str)
 
     def __init__(self, image_path: Path, image_dir: Path, annotation_dir: Path, annotations: list[Annotation], settings: ProjectSettings) -> None:
