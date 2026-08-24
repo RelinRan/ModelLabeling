@@ -226,14 +226,14 @@ class AnnotationService:
                     Keypoint(names[index // 3] if index // 3 < len(names) else f"keypoint_{index // 3}", QPointF(float(raw_keypoints[index]), float(raw_keypoints[index + 1])), int(raw_keypoints[index + 2]))
                     for index in range(0, len(raw_keypoints), 3)
                 ]
+            if parsed_keypoints:
+                annotations.append(Annotation(ShapeType.KEYPOINT, category_name, bbox_points, color=color, keypoints=parsed_keypoints, schema_name="COCO Keypoints"))
+                continue
             segmentation = item.get("segmentation")
             if isinstance(segmentation, list) and segmentation and isinstance(segmentation[0], list) and len(segmentation[0]) >= 6:
                 values = segmentation[0]
                 polygon = [QPointF(float(values[index]), float(values[index + 1])) for index in range(0, len(values) - 1, 2)]
-                annotations.append(Annotation(ShapeType.POLYGON, category_name, polygon, color=color, keypoints=parsed_keypoints, schema_name="COCO Keypoints" if parsed_keypoints else None))
-                continue
-            if parsed_keypoints:
-                annotations.append(Annotation(ShapeType.KEYPOINT, category_name, bbox_points, color=color, keypoints=parsed_keypoints, schema_name="COCO Keypoints"))
+                annotations.append(Annotation(ShapeType.POLYGON, category_name, polygon, color=color))
                 continue
             if bbox_points:
                 annotations.append(Annotation(ShapeType.RECTANGLE, category_name, bbox_points, color=color))

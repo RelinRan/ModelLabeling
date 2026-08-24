@@ -186,3 +186,35 @@ def test_coco_keypoints_convert_to_official_yolo_pose(tmp_path):
     assert "[nose, eye]" in yaml_text
     values = (output / "labels" / "sample.txt").read_text(encoding="utf-8").split()
     assert len(values) == 5 + 2 * 3
+
+
+def test_coco_keypoints_take_priority_over_segmentation(tmp_path):
+    image = tmp_path / "images" / "sample.jpg"
+    annotations_dir = tmp_path / "annotations"
+    image.parent.mkdir()
+    annotations_dir.mkdir()
+    _sample_image(image)
+    document = {
+        "images": [{"id": 1, "file_name": "sample.jpg", "width": 640, "height": 480}],
+        "categories": [{"id": 1, "name": "person", "keypoints": ["nose", "eye"], "skeleton": []}],
+        "annotations": [{
+            "id": 1,
+            "image_id": 1,
+            "category_id": 1,
+            "bbox": [30, 30, 70, 70],
+            "segmentation": [[30, 30, 100, 30, 100, 100, 30, 100]],
+            "keypoints": [50, 50, 2, 60, 55, 1],
+            "num_keypoints": 2,
+            "area": 4900,
+            "iscrowd": 0,
+        }],
+    }
+    (annotations_dir / "annotations.json").write_text(json.dumps(document), encoding="utf-8")
+    settings = _settings(tmp_path, "coco", "coco", [LabelPreset("person", 0, "#00e5ff")])
+
+    result = AnnotationService().load(image, annotations_dir, settings)
+
+    assert not result.error
+    assert len(result.annotations) == 1
+    assert result.annotations[0].shape_type == ShapeType.KEYPOINT
+    assert [item.name for item in result.annotations[0].keypoints] == ["nose", "eye"]
