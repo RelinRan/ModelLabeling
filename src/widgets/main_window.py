@@ -11,7 +11,7 @@ from collections import Counter
 
 from PySide6.QtCore import QEvent, QSettings, QThread, Qt, QTimer
 from PySide6.QtGui import QColor, QCursor, QIcon, QImage, QKeySequence, QShortcut
-from PySide6.QtWidgets import QApplication, QFileDialog, QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMenu, QProgressBar, QSplitter, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QFileDialog, QComboBox, QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMenu, QProgressBar, QSplitter, QVBoxLayout, QWidget
 
 from src.models.annotation import Annotation, LabelPreset, ShapeType, label_color
 from src.models.project import ImageRecord, ProjectSettings, ProjectState
@@ -118,9 +118,11 @@ class MainWindow(QMainWindow):
 
     def eventFilter(self, watched, event) -> bool:
         if event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_W and not event.isAutoRepeat():
-            self._toggle_canvas_drawing()
-            event.accept()
-            return True
+            focus = QApplication.focusWidget()
+            if focus is self.canvas or (focus is not None and self.canvas.isAncestorOf(focus)):
+                self._toggle_canvas_drawing()
+                event.accept()
+                return True
         return super().eventFilter(watched, event)
 
     def _format_display_name(self) -> str:
@@ -251,23 +253,47 @@ class MainWindow(QMainWindow):
             ("Ctrl+0", self.canvas.fit_image),
             ("Ctrl++", self.canvas.zoom_in),
             ("Ctrl+-", self.canvas.zoom_out),
-            ("A", self.previous_image),
-            ("Up", self.previous_image),
-            ("D", self.next_image),
-            ("Down", self.next_image),
+            ("A", lambda: self._navigate_shortcut(-1)),
+            ("Up", lambda: self._navigate_shortcut(-1)),
+            ("D", lambda: self._navigate_shortcut(1)),
+            ("Down", lambda: self._navigate_shortcut(1)),
             ("Ctrl+D, S", self.open_statistics),
             ("Ctrl+D, Ctrl+S", self.open_statistics),
             ("Ctrl+D, C", self.open_conversion),
             ("Ctrl+D, Ctrl+C", self.open_conversion),
             ("Ctrl+A, L", self.auto_label_all),
             ("Ctrl+A, Ctrl+L", self.auto_label_all),
-            ("W", self._toggle_canvas_drawing),
+            ("W", self._drawing_shortcut),
             ("Escape", self.canvas._disable_draw_mode),
-            ("Delete", self.canvas.delete_selected),
-            ("Backspace", self.canvas.delete_selected),
+            ("Delete", self._delete_shortcut),
+            ("Backspace", self._delete_shortcut),
         )
+        canvas_keys = {"A", "Up", "D", "Down", "W", "Escape", "Delete", "Backspace"}
         for key, handler in shortcut_bindings:
-            shortcut = QShortcut(QKeySequence(key), self); shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut); shortcut.activated.connect(handler); self._shortcuts.append(shortcut)
+            parent = self.canvas if key in canvas_keys else self
+            shortcut = QShortcut(QKeySequence(key), parent)
+            shortcut.setContext(
+                Qt.ShortcutContext.WidgetWithChildrenShortcut
+                if key in canvas_keys else Qt.ShortcutContext.WindowShortcut
+            )
+            shortcut.activated.connect(handler); self._shortcuts.append(shortcut)
+
+    @staticmethod
+    def _shortcut_input_focused() -> bool:
+        focus = QApplication.focusWidget()
+        return isinstance(focus, (QLineEdit, QComboBox))
+
+    def _navigate_shortcut(self, step: int) -> None:
+        if not self._shortcut_input_focused():
+            self._navigate_image_list(step)
+
+    def _drawing_shortcut(self) -> None:
+        if not self._shortcut_input_focused():
+            self._toggle_canvas_drawing()
+
+    def _delete_shortcut(self) -> None:
+        if not self._shortcut_input_focused():
+            self.canvas.delete_selected()
 
     def _toggle_canvas_drawing(self) -> None:
         """Toggle drawing without allowing ordinary clicks to create boxes."""
