@@ -406,6 +406,24 @@ class CanvasView(QGraphicsView):
             self.scene.addItem(self.preview)
         self.preview.setPolygon(QPolygonF(rect))
 
+    def _update_polygon_preview(self, current: QPointF | None = None) -> None:
+        """Show the committed vertices and the segment under the cursor."""
+        points = list(self.polygon_points)
+        if current is not None and (not points or (points[-1] - current).manhattanLength() > 0.01):
+            points.append(current)
+        if len(points) < 2:
+            if self.preview:
+                self.preview.hide()
+            return
+        if self.preview is None:
+            self.preview = QGraphicsPolygonItem()
+            self.preview.setPen(QPen(QColor(self.current_color), self.line_width, Qt.PenStyle.DashLine))
+            self.preview.setBrush(Qt.BrushStyle.NoBrush)
+            self.preview.setZValue(1)
+            self.scene.addItem(self.preview)
+        self.preview.setPolygon(QPolygonF(points))
+        self.preview.show()
+
     def _enable_draw_mode(self) -> None:
         self.draw_enabled = True
         # The settings dialog/menu can retain keyboard focus. W must make the
@@ -543,7 +561,9 @@ class CanvasView(QGraphicsView):
             super().mousePressEvent(event); return
         point = self.mapToScene(event.position().toPoint())
         if self.mode == ShapeType.POLYGON:
-            self.polygon_points.append(point); self.drawing = True; return
+            self.polygon_points.append(point); self.drawing = True
+            self._update_polygon_preview()
+            return
         if self.mode == ShapeType.KEYPOINT:
             name = self.keypoint_schema[len(self.pending_keypoints)] if len(self.pending_keypoints) < len(self.keypoint_schema) else f"keypoint_{len(self.pending_keypoints)}"
             self.pending_keypoints.append(Keypoint(name, point, 2)); self.drawing = True
@@ -557,6 +577,9 @@ class CanvasView(QGraphicsView):
         self._update_crosshair(scene_point)
         if self.drag_item and self.drag_mode:
             self._drag_box(scene_point); return
+        if self.drawing and self.mode == ShapeType.POLYGON:
+            self._update_polygon_preview(scene_point)
+            return
         if self.drawing and self.mode != ShapeType.POLYGON:
             current = scene_point
             rect = constrain_square(self.start, current) if self.mode == ShapeType.SQUARE else normalize_rect(self.start, current)
@@ -587,7 +610,13 @@ class CanvasView(QGraphicsView):
         item = self._item_at_event(event)
         if item: self._select_item(item); self.annotationEditRequested.emit(item.annotation); return
         if self.mode == ShapeType.POLYGON and len(self.polygon_points) >= 3:
-            annotation = Annotation(ShapeType.POLYGON, self.current_label, list(self.polygon_points), self.current_color); self.annotations.append(annotation); self._add_annotation_item(annotation); self.annotationCreated.emit(annotation); self.dirtyChanged.emit(True); self._disable_draw_mode(); return
+            points = list(self.polygon_points)
+            if len(points) >= 2 and (points[-1] - points[-2]).manhattanLength() <= 10:
+                points.pop()
+            if len(points) >= 3:
+                annotation = Annotation(ShapeType.POLYGON, self.current_label, points, self.current_color)
+                self.annotations.append(annotation); self._add_annotation_item(annotation); self.annotationCreated.emit(annotation); self.dirtyChanged.emit(True)
+            self._disable_draw_mode(); return
         if self.mode == ShapeType.KEYPOINT and self.pending_keypoints:
             self._finish_keypoint_annotation(); return
         super().mouseDoubleClickEvent(event)
