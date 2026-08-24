@@ -762,7 +762,7 @@ class MainWindow(QMainWindow):
 
     def eventFilter(self, watched, event) -> bool:
         if event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_W and not event.isAutoRepeat():
-            self._enable_canvas_drawing()
+            self._toggle_canvas_drawing()
             event.accept()
             return True
         return super().eventFilter(watched, event)
@@ -905,7 +905,7 @@ class MainWindow(QMainWindow):
             ("Ctrl+D, Ctrl+C", self.open_conversion),
             ("Ctrl+A, L", self.auto_label_all),
             ("Ctrl+A, Ctrl+L", self.auto_label_all),
-            ("W", self._enable_canvas_drawing),
+            ("W", self._toggle_canvas_drawing),
             ("Escape", self.canvas._disable_draw_mode),
             ("Delete", self.canvas.delete_selected),
             ("Backspace", self.canvas.delete_selected),
@@ -913,14 +913,22 @@ class MainWindow(QMainWindow):
         for key, handler in shortcut_bindings:
             shortcut = QShortcut(QKeySequence(key), self); shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut); shortcut.activated.connect(handler); self._shortcuts.append(shortcut)
 
-    def _enable_canvas_drawing(self) -> None:
-        """Enter the shape selected in Application Settings from any focus."""
+    def _toggle_canvas_drawing(self) -> None:
+        """Toggle drawing without allowing ordinary clicks to create boxes."""
+        if self.canvas.draw_enabled:
+            self.canvas._disable_draw_mode()
+            return
         configured = next(
             (ShapeType(value) for value in self.settings.enabled_shapes if ShapeType(value) in self.canvas.enabled_shapes),
             self.canvas.mode,
         )
         self.canvas.set_mode(configured)
         self.canvas._enable_draw_mode()
+
+    def _enable_canvas_drawing(self) -> None:
+        """Backward-compatible entry point for callers that explicitly enable drawing."""
+        if not self.canvas.draw_enabled:
+            self._toggle_canvas_drawing()
 
     @staticmethod
     def _action(menu, text, handler):

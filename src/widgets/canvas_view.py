@@ -642,7 +642,11 @@ class CanvasView(QGraphicsView):
 
     def keyPressEvent(self, event) -> None:
         if event.key() == Qt.Key.Key_Escape: self._disable_draw_mode()
-        elif event.key() == Qt.Key.Key_W: self._enable_draw_mode()
+        elif event.key() == Qt.Key.Key_W:
+            if self.draw_enabled:
+                self._disable_draw_mode()
+            else:
+                self._enable_draw_mode()
         elif event.key() in {Qt.Key.Key_Delete, Qt.Key.Key_Backspace}: self.delete_selected()
         elif event.key() in {Qt.Key.Key_Plus, Qt.Key.Key_Equal} and event.modifiers() & Qt.KeyboardModifier.ControlModifier: self.zoom_in()
         elif event.key() == Qt.Key.Key_Minus and event.modifiers() & Qt.KeyboardModifier.ControlModifier: self.zoom_out()
