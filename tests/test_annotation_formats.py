@@ -1,5 +1,6 @@
 import os
 import json
+import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -12,6 +13,8 @@ from src.models.annotation import Annotation, Keypoint, LabelPreset, ShapeType
 from src.models.project import ProjectSettings
 from src.services.annotation_service import AnnotationService
 from src.services.coco_store import CocoAnnotationStore
+from src.services.conversion_service import ConversionOptions, ConversionService
+from src.services.format_capabilities import UnsupportedAnnotationError, validate_annotations
 
 
 def _sample_image(path: Path) -> None:
@@ -101,3 +104,85 @@ def test_coco_single_image_transaction_and_checkpoint(tmp_path):
     output = store.export_json()
     assert output.exists() and not store.is_dirty()
     assert json.loads(output.read_text(encoding="utf-8")) == document
+
+
+def test_yolo_pose_rejects_mixed_keypoint_schema():
+    first = Annotation(
+        ShapeType.KEYPOINT, "person", [QPointF(0, 0), QPointF(10, 10)],
+        keypoints=[Keypoint("nose", QPointF(1, 1), 2), Keypoint("eye", QPointF(2, 2), 2)],
+    )
+    second = Annotation(
+        ShapeType.KEYPOINT, "person", [QPointF(0, 0), QPointF(10, 10)],
+        keypoints=[Keypoint("nose", QPointF(1, 1), 2), Keypoint("ear", QPointF(2, 2), 2)],
+    )
+    with pytest.raises(UnsupportedAnnotationError):
+        validate_annotations([first, second], "yolo", "yolo_pose")
+
+
+def test_yolo_pose_load_validates_data_yaml_shape(tmp_path):
+    image = tmp_path / "images" / "sample.jpg"
+    labels = tmp_path / "labels"
+    image.parent.mkdir(); labels.mkdir()
+    _sample_image(image)
+    (tmp_path / "data.yaml").write_text("kpt_shape: [3, 3]\n", encoding="utf-8")
+    (labels / "sample.txt").write_text(
+        "0 0.5 0.5 0.5 0.5 0.4 0.4 2 0.6 0.6 2\n", encoding="utf-8"
+    )
+    settings = _settings(tmp_path, "yolo", "yolo_pose", [LabelPreset("person", 0, "#00e5ff")])
+    result = AnnotationService().load(image, labels, settings)
+    assert result.error and "expected 3 keypoints" in result.error
+
+
+def test_yolo_pose_load_accepts_matching_data_yaml_shape(tmp_path):
+    image = tmp_path / "images" / "sample.jpg"
+    labels = tmp_path / "labels"
+    image.parent.mkdir(); labels.mkdir()
+    _sample_image(image)
+    (tmp_path / "data.yaml").write_text("kpt_shape: [2, 3]\n", encoding="utf-8")
+    (labels / "sample.txt").write_text(
+        "0 0.5 0.5 0.5 0.5 0.4 0.4 2 0.6 0.6 2\n", encoding="utf-8"
+    )
+    settings = _settings(tmp_path, "yolo", "yolo_pose", [LabelPreset("person", 0, "#00e5ff")])
+    result = AnnotationService().load(image, labels, settings)
+    assert not result.error
+    assert len(result.annotations) == 1
+    assert len(result.annotations[0].keypoints) == 2
+
+
+def test_coco_keypoints_convert_to_official_yolo_pose(tmp_path):
+    source = tmp_path / "source"
+    image = source / "images" / "sample.jpg"
+    annotations_dir = source / "annotations"
+    image.parent.mkdir(parents=True)
+    annotations_dir.mkdir()
+    _sample_image(image)
+    presets = [LabelPreset("person", 0, "#00e5ff")]
+    annotation = Annotation(
+        ShapeType.KEYPOINT,
+        "person",
+        [QPointF(30, 30), QPointF(100, 100)],
+        keypoints=[
+            Keypoint("nose", QPointF(50, 50), 2),
+            Keypoint("eye", QPointF(60, 55), 1),
+        ],
+    )
+    AnnotationService().save_coco_batch([(image, [annotation])], annotations_dir, presets)
+
+    output = tmp_path / "output"
+    report = ConversionService().convert(ConversionOptions(
+        source_format="coco",
+        source_path=source,
+        output_format="yolo",
+        output_path=output,
+        presets=presets,
+        overwrite=True,
+        source_task="coco",
+        output_task="yolo_pose",
+    ))
+
+    assert report.succeeded == 1 and report.failed == 0
+    yaml_text = (output / "data.yaml").read_text(encoding="utf-8")
+    assert "kpt_shape: [2, 3]" in yaml_text
+    assert "[nose, eye]" in yaml_text
+    values = (output / "labels" / "sample.txt").read_text(encoding="utf-8").split()
+    assert len(values) == 5 + 2 * 3

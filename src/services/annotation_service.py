@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -469,6 +470,7 @@ class AnnotationService:
         else:
             width, height = image_size
         _, by_id = self._preset_maps(presets)
+        expected_keypoints = self._yolo_pose_keypoint_count(directory)
         annotations: list[Annotation] = []
         for line_number, raw in enumerate(txt_path.read_text(encoding="utf-8").splitlines(), start=1):
             parts = raw.split()
@@ -476,6 +478,11 @@ class AnnotationService:
                 continue
             if (len(parts) - 5) % 3 != 0 or len(parts) < 8:
                 raise ValueError(f"{txt_path.name}:{line_number}: invalid YOLO Pose keypoint row")
+            row_keypoints = (len(parts) - 5) // 3
+            if expected_keypoints is not None and row_keypoints != expected_keypoints:
+                raise ValueError(
+                    f"{txt_path.name}:{line_number}: expected {expected_keypoints} keypoints, got {row_keypoints}"
+                )
             class_id = int(parts[0])
             preset = by_id.get(class_id)
             if preset is None:
@@ -502,6 +509,23 @@ class AnnotationService:
                 schema_name="YOLO Pose",
             ))
         return annotations
+
+    @staticmethod
+    def _yolo_pose_keypoint_count(directory: Path) -> int | None:
+        candidates = []
+        current = Path(directory)
+        parents = list(current.parents)[:3]
+        for parent in (current, *parents):
+            candidates.extend((parent / "data.yaml", parent / "data.yml"))
+        for path in candidates:
+            if not path.is_file():
+                continue
+            match = re.search(r"(?m)^\s*kpt_shape\s*:\s*\[\s*(\d+)\s*,\s*([23])\s*\]", path.read_text(encoding="utf-8", errors="ignore"))
+            if match:
+                if int(match.group(2)) != 3:
+                    raise ValueError("YOLO Pose kpt_shape must use [count, 3]")
+                return int(match.group(1))
+        return None
 
     def _load_yolo_segmentation(self, image_path: Path, directory: Path, presets: list[LabelPreset], image_size: tuple[int, int] | None = None, index: DatasetAnnotationIndex | None = None) -> list[Annotation]:
         txt_path = directory / f"{image_path.stem}.txt"

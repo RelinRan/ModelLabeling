@@ -91,4 +91,20 @@ def validate_annotations(
         raise UnsupportedAnnotationError(
             f"{capabilities.display_name} does not support: {', '.join(unsupported)}"
         )
+    if capabilities.task == DatasetTask.YOLO_POSE:
+        counts = {len(annotation.keypoints) for annotation in annotations}
+        if 0 in counts:
+            raise UnsupportedAnnotationError("YOLO Pose requires at least one keypoint per annotation")
+        if len(counts) > 1:
+            raise UnsupportedAnnotationError(
+                "YOLO Pose requires one consistent keypoint count across the dataset"
+            )
+        schemas = {
+            tuple(keypoint.name for keypoint in annotation.keypoints)
+            for annotation in annotations
+        }
+        if len(schemas) > 1:
+            raise UnsupportedAnnotationError(
+                "YOLO Pose requires one consistent keypoint schema across the dataset"
+            )
     return capabilities

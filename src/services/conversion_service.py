@@ -127,6 +127,7 @@ class ConversionService:
                     report.succeeded = 0
             return report
         keypoint_names: list[str] = []
+        pose_schema: tuple[str, ...] | None = None
         total = len(images)
         for index, image_path in enumerate(images, start=1):
             if cancel_callback and cancel_callback():
@@ -143,6 +144,13 @@ class ConversionService:
                         raise ValueError(result.error)
                     if output_task == "yolo_pose" and not keypoint_names:
                         keypoint_names = [item.name for item in next((annotation.keypoints for annotation in result.annotations if annotation.keypoints), [])]
+                    if output_task == "yolo_pose":
+                        for annotation in result.annotations:
+                            schema = tuple(item.name for item in annotation.keypoints)
+                            if pose_schema is None:
+                                pose_schema = schema
+                            elif schema != pose_schema:
+                                raise ValueError("inconsistent keypoint schema for YOLO Pose output")
                     output_settings = ProjectSettings(
                         annotation_format=output_format,
                         dataset_task=output_task,
