@@ -139,6 +139,10 @@ class AnnotationService:
         return by_name, by_id
 
     def _load_by_adapter(self, image_path: Path, directory: Path, settings: ProjectSettings, adapter, index=None, image_size=None) -> LoadResult:
+        directory = self._annotation_directory_for_image(
+            image_path, directory, settings.image_dir,
+            ".xml" if adapter.format_name == "voc" else ".txt",
+        ) if adapter.format_name != "coco" else directory
         if adapter.format_name == "voc":
             return LoadResult(self._load_voc(image_path, directory, settings.label_presets, index))
         if adapter.format_name == "coco":
@@ -151,6 +155,12 @@ class AnnotationService:
         return LoadResult(self._load_yolo(image_path, directory, settings.label_presets, image_size, index))
 
     def _save_by_adapter(self, image_path: Path, annotations: list[Annotation], directory: Path, settings: ProjectSettings, adapter) -> SaveResult:
+        directory = self._annotation_directory_for_image(
+            image_path, directory, settings.image_dir,
+            ".xml" if adapter.format_name == "voc" else ".txt",
+            for_save=True,
+        ) if adapter.format_name != "coco" else directory
+        directory.mkdir(parents=True, exist_ok=True)
         if adapter.format_name == "voc":
             self._save_voc(image_path, annotations, directory, settings.label_presets)
         elif adapter.format_name == "coco":
@@ -162,6 +172,28 @@ class AnnotationService:
         else:
             self._save_yolo(image_path, annotations, directory, settings.label_presets)
         return SaveResult(True)
+
+    @staticmethod
+    def _annotation_directory_for_image(
+        image_path: Path,
+        annotation_dir: Path,
+        image_dir: Path | None,
+        suffix: str,
+        for_save: bool = False,
+    ) -> Path:
+        annotation_dir = Path(annotation_dir)
+        if image_dir is None:
+            return annotation_dir
+        try:
+            relative = Path(image_path).resolve().relative_to(Path(image_dir).resolve())
+        except ValueError:
+            return annotation_dir
+        nested = annotation_dir / relative.parent
+        nested_file = nested / f"{relative.stem}{suffix}"
+        flat_file = annotation_dir / f"{relative.stem}{suffix}"
+        if nested_file.exists() or (for_save and not flat_file.exists()):
+            return nested
+        return annotation_dir
 
     @staticmethod
     def _coco_json_path(directory: Path) -> Path | None:

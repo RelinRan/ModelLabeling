@@ -309,3 +309,66 @@ def test_coco_rle_mask_is_not_silently_loaded_as_rectangle(tmp_path):
 
     assert not result.annotations
     assert result.error and "RLE mask" in result.error
+
+
+def test_yolo_split_layout_reads_and_saves_matching_annotation_branch(tmp_path):
+    image_dir = tmp_path / "images"
+    annotation_dir = tmp_path / "labels"
+    train_image = image_dir / "train" / "same.jpg"
+    val_image = image_dir / "val" / "same.jpg"
+    (annotation_dir / "train").mkdir(parents=True)
+    (annotation_dir / "val").mkdir(parents=True)
+    train_image.parent.mkdir(parents=True)
+    val_image.parent.mkdir(parents=True)
+    _sample_image(train_image)
+    _sample_image(val_image)
+    (annotation_dir / "train" / "same.txt").write_text(
+        "0 0.25 0.25 0.2 0.2\n", encoding="utf-8",
+    )
+    (annotation_dir / "val" / "same.txt").write_text(
+        "0 0.75 0.75 0.2 0.2\n", encoding="utf-8",
+    )
+    settings = ProjectSettings(
+        image_dir=image_dir,
+        annotation_dir=annotation_dir,
+        annotation_format="yolo",
+        dataset_task="yolo_detection",
+        label_presets=[LabelPreset("person", 0, "#00e5ff")],
+    )
+    service = AnnotationService()
+
+    train = service.load(train_image, annotation_dir, settings)
+    val = service.load(val_image, annotation_dir, settings)
+
+    assert not train.error and not val.error
+    assert train.annotations[0].points[0].x() < val.annotations[0].points[0].x()
+    replacement = Annotation(
+        ShapeType.RECTANGLE, "person", [QPointF(100, 100), QPointF(200, 200)],
+    )
+    assert service.save(val_image, [replacement], annotation_dir, settings).ok
+    assert "0.234375" in (annotation_dir / "val" / "same.txt").read_text(encoding="utf-8")
+    assert "0.25 0.25" in (annotation_dir / "train" / "same.txt").read_text(encoding="utf-8")
+
+
+def test_voc_nested_layout_saves_annotation_beside_matching_branch(tmp_path):
+    image_dir = tmp_path / "images"
+    annotation_dir = tmp_path / "Annotations"
+    image = image_dir / "train" / "sample.jpg"
+    image.parent.mkdir(parents=True)
+    annotation_dir.mkdir()
+    _sample_image(image)
+    settings = ProjectSettings(
+        image_dir=image_dir,
+        annotation_dir=annotation_dir,
+        annotation_format="voc",
+        dataset_task="voc",
+        label_presets=[LabelPreset("person", 0, "#00e5ff")],
+    )
+    annotation = Annotation(
+        ShapeType.RECTANGLE, "person", [QPointF(10, 20), QPointF(110, 120)],
+    )
+
+    result = AnnotationService().save(image, [annotation], annotation_dir, settings)
+
+    assert result.ok
+    assert (annotation_dir / "train" / "sample.xml").exists()
