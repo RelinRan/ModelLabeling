@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 import hashlib
+import math
 from typing import Any
 
 from PySide6.QtCore import QPointF
@@ -51,6 +52,8 @@ class Keypoint:
         self.visibility = int(self.visibility)
         if self.visibility not in (0, 1, 2):
             raise ValueError("keypoint visibility must be 0, 1, or 2")
+        if not math.isfinite(self.point.x()) or not math.isfinite(self.point.y()):
+            raise ValueError("keypoint coordinates must be finite")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -87,6 +90,10 @@ class Annotation:
             raise ValueError("label must not be empty")
         if self.shape_type != ShapeType.KEYPOINT and len(self.points) < 2:
             raise ValueError("annotation requires at least two points")
+        if self.shape_type in {ShapeType.RECTANGLE, ShapeType.SQUARE} and len(self.points) != 2:
+            raise ValueError("box annotation requires exactly two points")
+        if self.shape_type == ShapeType.POLYGON and len(self.points) < 3 and not self.polygon_parts:
+            raise ValueError("polygon annotation requires at least three points")
         if self.shape_type == ShapeType.KEYPOINT and not self.keypoints:
             raise ValueError("keypoint annotation requires at least one keypoint")
         if self.shape_type == ShapeType.KEYPOINT and len(self.points) not in (0, 2):
@@ -99,6 +106,10 @@ class Annotation:
                 self.points = list(self.polygon_parts[0])
             else:
                 self.polygon_parts = [list(self.points)]
+        all_points = list(self.points)
+        all_points.extend(point for part in self.polygon_parts for point in part)
+        if any(not math.isfinite(point.x()) or not math.isfinite(point.y()) for point in all_points):
+            raise ValueError("annotation coordinates must be finite")
         self.color = label_color(self.label) if not self.color else str(self.color)
         if self.confidence is not None:
             self.confidence = max(0.0, min(1.0, float(self.confidence)))

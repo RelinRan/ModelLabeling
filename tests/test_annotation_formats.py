@@ -372,3 +372,38 @@ def test_voc_nested_layout_saves_annotation_beside_matching_branch(tmp_path):
 
     assert result.ok
     assert (annotation_dir / "train" / "sample.xml").exists()
+
+
+def test_invalid_polygon_and_nonfinite_coordinates_are_rejected():
+    with pytest.raises(ValueError, match="at least three"):
+        Annotation(
+            ShapeType.POLYGON, "person", [QPointF(0, 0), QPointF(10, 10)],
+        )
+    with pytest.raises(ValueError, match="finite"):
+        Annotation(
+            ShapeType.RECTANGLE, "person", [QPointF(0, 0), QPointF(float("nan"), 10)],
+        )
+    with pytest.raises(ValueError, match="finite"):
+        Keypoint("nose", QPointF(float("inf"), 0), 2)
+
+
+def test_yolo_pose_rejects_fractional_visibility(tmp_path):
+    image = tmp_path / "images" / "sample.jpg"
+    labels = tmp_path / "labels"
+    image.parent.mkdir(); labels.mkdir()
+    _sample_image(image)
+    (tmp_path / "data.yaml").write_text(
+        "kpt_shape: [1, 3]\nnames: [person]\n", encoding="utf-8",
+    )
+    (labels / "sample.txt").write_text(
+        "0 0.5 0.5 0.5 0.5 0.4 0.4 1.6\n", encoding="utf-8",
+    )
+    settings = ProjectSettings(
+        image_dir=tmp_path / "images", annotation_dir=labels,
+        annotation_format="yolo", dataset_task="yolo_pose",
+        label_presets=[LabelPreset("person", 0, "#00e5ff")],
+    )
+
+    result = AnnotationService().load(image, labels, settings)
+
+    assert result.error and "visibility must be 0, 1, or 2" in result.error

@@ -533,6 +533,8 @@ class AnnotationService:
             values = tuple(float(item) for item in parts[1:5])
             if any(value < 0.0 or value > 1.0 for value in values):
                 raise ValueError(f"{txt_path.name}:{line_number}: normalized value out of range")
+            if values[2] <= 0.0 or values[3] <= 0.0:
+                raise ValueError(f"{txt_path.name}:{line_number}: bbox dimensions must be positive")
             rect = yolo_to_rect(values, width, height)
             annotations.append(
                 Annotation(
@@ -581,6 +583,8 @@ class AnnotationService:
             bbox_values = values[:4]
             if any(value < 0.0 or value > 1.0 for value in bbox_values):
                 raise ValueError(f"{txt_path.name}:{line_number}: normalized bbox out of range")
+            if bbox_values[2] <= 0.0 or bbox_values[3] <= 0.0:
+                raise ValueError(f"{txt_path.name}:{line_number}: bbox dimensions must be positive")
             rect = yolo_to_rect(tuple(bbox_values), width, height)
             keypoint_names = yolo_keypoint_names(directory, class_id)
             if keypoint_names and len(keypoint_names) != row_keypoints:
@@ -593,10 +597,12 @@ class AnnotationService:
                 x, y, visibility = values[index:index + 3]
                 if not 0.0 <= x <= 1.0 or not 0.0 <= y <= 1.0:
                     raise ValueError(f"{txt_path.name}:{line_number}: normalized keypoint out of range")
+                if visibility not in (0.0, 1.0, 2.0):
+                    raise ValueError(f"{txt_path.name}:{line_number}: keypoint visibility must be 0, 1, or 2")
                 keypoints.append(Keypoint(
                     keypoint_names[len(keypoints)] if keypoint_names else f"keypoint_{len(keypoints)}",
                     QPointF(x * width, y * height),
-                    int(round(visibility)),
+                    int(visibility),
                 ))
             annotations.append(Annotation(
                 ShapeType.KEYPOINT, preset.name,
