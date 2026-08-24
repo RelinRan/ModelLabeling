@@ -139,24 +139,37 @@ class YoloOnnxDetector:
         data = np.asarray(output)
         if data.ndim == 3:
             data = data[0]
-        if data.ndim != 2 or data.shape[1] < 8:
+        if data.ndim != 2:
             raise ValueError(f"unsupported YOLO Pose output shape: {data.shape}")
+        class_count = len(self.class_names) or len(presets)
+        metadata_keypoints = len(self.keypoint_names)
+        expected_widths = set()
+        if metadata_keypoints:
+            expected_widths.update({
+                6 + metadata_keypoints * 3,
+                4 + class_count + metadata_keypoints * 3,
+                5 + class_count + metadata_keypoints * 3,
+            })
+        if data.shape[0] in expected_widths and data.shape[1] not in expected_widths:
+            data = data.T
+        if data.shape[1] < 8:
+            raise ValueError(f"unsupported YOLO Pose output shape: {data.shape}")
+        rows = self._decode_pose_rows(data, class_count, metadata_keypoints)
         candidates = []
-        keypoint_count = (data.shape[1] - 6) // 3
+        keypoint_count = metadata_keypoints or (len(rows[0][6]) if rows else 0)
         names = self.keypoint_names or [f"keypoint_{index}" for index in range(keypoint_count)]
-        for row in data:
-            x1, y1, x2, y2, score, class_id = map(float, row[:6])
-            if score < confidence_threshold or not 0 <= int(class_id) < len(presets):
+        for x1, y1, x2, y2, score, class_id, values in rows:
+            if score < confidence_threshold or not 0 <= class_id < len(presets):
                 continue
             raw_keypoints = []
             for index in range(keypoint_count):
-                x, y, visibility = map(float, row[6 + index * 3:9 + index * 3])
+                x, y, visibility = map(float, values[index * 3:index * 3 + 3])
                 if max(abs(x), abs(y)) <= 1.5:
                     x *= input_width
                     y *= input_height
                 visible = 2 if visibility >= 0.5 else 1 if visibility > 0 else 0
                 raw_keypoints.append((names[index] if index < len(names) else f"keypoint_{index}", x, y, visible))
-            candidates.append((x1, y1, x2, y2, score, int(class_id), raw_keypoints))
+            candidates.append((x1, y1, x2, y2, score, class_id, raw_keypoints))
         selected = self._nms(candidates, nms_threshold)
         results: list[Annotation] = []
         for x1, y1, x2, y2, score, class_id, raw_keypoints in selected:
@@ -184,6 +197,40 @@ class YoloOnnxDetector:
                 schema_name="COCO Person 17" if len(keypoints) == 17 else "YOLO Pose",
             ))
         return results
+
+    @staticmethod
+    def _decode_pose_rows(
+        data: np.ndarray, class_count: int, keypoint_count: int,
+    ) -> list[tuple[float, float, float, float, float, int, np.ndarray]]:
+        width = data.shape[1]
+        end_to_end_width = 6 + keypoint_count * 3 if keypoint_count else -1
+        raw_width = 4 + class_count + keypoint_count * 3 if keypoint_count else -1
+        objectness_width = 5 + class_count + keypoint_count * 3 if keypoint_count else -1
+        rows = []
+        for row in data:
+            if width == end_to_end_width:
+                x1, y1, x2, y2, score, raw_class = map(float, row[:6])
+                class_id = int(raw_class)
+                keypoints = row[6:]
+            elif width in {raw_width, objectness_width}:
+                x, y, box_width, box_height = map(float, row[:4])
+                offset = 5 if width == objectness_width else 4
+                objectness = float(row[4]) if width == objectness_width else 1.0
+                class_scores = row[offset:offset + class_count]
+                class_id = int(np.argmax(class_scores)) if len(class_scores) else 0
+                score = objectness * (float(class_scores[class_id]) if len(class_scores) else 1.0)
+                x1, y1 = x - box_width / 2, y - box_height / 2
+                x2, y2 = x + box_width / 2, y + box_height / 2
+                keypoints = row[offset + class_count:]
+            else:
+                raise ValueError(
+                    f"unsupported YOLO Pose row width {width}; "
+                    "model metadata must define matching names, kpt_names, and kpt_shape"
+                )
+            if len(keypoints) != keypoint_count * 3:
+                raise ValueError("YOLO Pose keypoint columns do not match model metadata")
+            rows.append((x1, y1, x2, y2, float(score), class_id, keypoints))
+        return rows
 
     @staticmethod
     def _decode_output(output: np.ndarray, class_count: int) -> list[tuple[float, float, float, float, float, int]]:
