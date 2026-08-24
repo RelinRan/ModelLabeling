@@ -26,7 +26,7 @@ from src.services.project_service import ProjectService
 from src.services.operation_coordinator import OperationCoordinator
 from src.services.dataset_session import DatasetScanResult, DatasetSession
 from src.services.onnx_service import YoloOnnxDetector
-from src.services.workers import AutoLabelWorker, DatasetAnnotationSaveWorker, DatasetCountWorker, SaveWorker, SingleImageAnnotationWorker
+from src.services.workers import AutoLabelWorker, DatasetAnnotationSaveWorker, DatasetCountWorker, DatasetScanWorker, DatasetStatisticsWorker, SaveWorker, SingleImageAnnotationWorker
 from src.services.format_capabilities import CAPABILITIES, task_for_format
 from .annotation_edit_dialog import AnnotationEditDialog
 from .common_dialogs import AppDialog
@@ -119,7 +119,7 @@ class _LegacySingleImageAnnotationWorker(QObject):
         return [LabelPreset(name, index, colors[index] if index < len(colors) else QColor.fromHsv((index * 47) % 360, 210, 245).name()) for index, name in enumerate(names)]
 
 
-class DatasetStatisticsWorker(QObject):
+class _LegacyDatasetStatisticsWorker(QObject):
     progress = Signal(int, int, object)
     finished = Signal(object)
     failed = Signal(str)
@@ -256,7 +256,7 @@ class DatasetStatisticsWorker(QObject):
             return []
 
 
-class DatasetScanWorker(QObject):
+class _LegacyDatasetScanWorker(QObject):
     progress = Signal(int, int)
     partial = Signal(object)
     finished = Signal(object)
