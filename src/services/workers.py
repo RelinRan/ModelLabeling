@@ -218,17 +218,19 @@ class SingleImageAnnotationWorker(QObject):
 
 class AutoLabelWorker(QObject):
     progress = Signal(int, int)
-    modelReady = Signal(str, object)
+    modelReady = Signal(str, object, object)
     annotationReady = Signal(str, object)
     finished = Signal()
     failed = Signal(str)
 
-    def __init__(self, records: list[ImageRecord], settings: ProjectSettings) -> None:
+    def __init__(self, records: list[ImageRecord] | None, settings: ProjectSettings) -> None:
         super().__init__()
-        self.records = [ImageRecord(path=item.path, width=item.width, height=item.height,
-                                    file_format=item.file_format, file_size=item.file_size,
-                                    status=item.status, metadata_loaded=item.metadata_loaded)
-                        for item in records]
+        self.records = None if records is None else [
+            ImageRecord(path=item.path, width=item.width, height=item.height,
+                        file_format=item.file_format, file_size=item.file_size,
+                        status=item.status, metadata_loaded=item.metadata_loaded)
+            for item in records
+        ]
         self.settings = ProjectSettings.from_dict(settings.to_dict())
         self.cancelled = False
 
@@ -238,21 +240,35 @@ class AutoLabelWorker(QObject):
                 raise ValueError("请先在应用设置中选择 ONNX 模型")
             detector = YoloOnnxDetector()
             detector.load(self.settings.onnx_model_path)
-            if detector.task == "pose":
+            if detector.class_names and self.settings.annotation_format == "yolo":
+                dataset_names = [
+                    preset.name for preset in sorted(
+                        self.settings.label_presets, key=lambda preset: preset.class_id,
+                    )
+                ]
+                if dataset_names and dataset_names != detector.class_names:
+                    raise ValueError(
+                        "ONNX model classes do not match the opened YOLO dataset classes"
+                    )
+            if detector.task == "pose" and self.settings.annotation_format == "yolo":
                 self.settings.dataset_task = "yolo_pose"
-            self.modelReady.emit(detector.task, list(detector.keypoint_names))
+            model_presets = self._model_presets(detector.class_names)
+            self.settings.label_presets = model_presets
+            self.modelReady.emit(
+                detector.task, list(detector.keypoint_names), list(detector.class_names),
+            )
             service = AnnotationService()
-            total = len(self.records)
+            records, total = self._records_and_total()
             size = (self.settings.input_width, self.settings.input_height)
-            for current, record in enumerate(self.records, 1):
+            for current, record in enumerate(records, 1):
                 if self.cancelled:
                     break
                 from PIL import Image
                 with Image.open(record.path) as image:
-                    annotations = detector.predict(image, self.settings.label_presets, size,
+                    annotations = detector.predict(image, model_presets, size,
                                                     self.settings.confidence_threshold,
                                                     self.settings.nms_threshold)
-                if self.settings.auto_save and self.settings.annotation_dir is not None:
+                if self.settings.annotation_dir is not None:
                     target_dir = self.settings.annotation_dir
                     if self.settings.annotation_format != "coco" and self.settings.image_dir is not None:
                         try:
@@ -267,6 +283,45 @@ class AutoLabelWorker(QObject):
             self.finished.emit()
         except Exception as exc:
             self.failed.emit(str(exc))
+
+    def _records_and_total(self):
+        if self.records is not None:
+            return iter(self.records), len(self.records)
+        if self.settings.image_dir is None or self.settings.annotation_dir is None:
+            return iter(()), 0
+        repository = DatasetIndexRepository(
+            self.settings.image_dir.parent.resolve(),
+            self.settings.image_dir,
+            self.settings.annotation_dir,
+            self.settings.annotation_format,
+        )
+        total = repository.count()
+
+        def records():
+            for page in repository.iter_pages(500):
+                if self.cancelled:
+                    return
+                for item in page:
+                    yield ImageRecord(
+                        path=item.path, width=item.width, height=item.height,
+                        file_format=item.path.suffix.lstrip(".").upper(),
+                        file_size=item.file_size, status=item.annotation_status,
+                        metadata_loaded=False,
+                    )
+
+        return records(), total
+
+    def _model_presets(self, class_names: list[str]) -> list[LabelPreset]:
+        if not class_names:
+            return list(self.settings.label_presets)
+        colors = {preset.class_id: preset.color for preset in self.settings.label_presets}
+        return [
+            LabelPreset(
+                name, class_id,
+                colors.get(class_id, QColor.fromHsv((class_id * 47) % 360, 210, 245).name()),
+            )
+            for class_id, name in enumerate(class_names)
+        ]
 
 
 class SaveWorker(QObject):

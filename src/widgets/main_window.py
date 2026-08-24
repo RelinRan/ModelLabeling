@@ -1240,18 +1240,51 @@ class MainWindow(QMainWindow):
             return
         if not self.state.images: AppDialog.information("自动标注", "请先打开数据集", self); return
         if not self.settings.onnx_model_path: AppDialog.information("自动标注", "请先在应用设置中选择 ONNX 模型", self); return
-        self._auto_cancel_requested = False; self._auto_thread = QThread(self); self._auto_worker = AutoLabelWorker(self.state.images, ProjectSettings.from_dict(self.settings.to_dict())); self.auto_task_id = self.task_manager.start("自动标注", self.cancel_auto_label, len(self.state.images)); self._auto_worker.moveToThread(self._auto_thread); self._auto_thread.started.connect(self._auto_worker.run); self._auto_worker.modelReady.connect(self._auto_model_ready); self._auto_worker.progress.connect(self._auto_progress); self._auto_worker.finished.connect(self._auto_finished); self._auto_worker.failed.connect(self._auto_failed); self._auto_worker.finished.connect(self._auto_thread.quit); self._auto_worker.failed.connect(self._auto_thread.quit); self._auto_thread.finished.connect(self._auto_thread_finished); self._set_status_progress("自动标注", 0, len(self.state.images)); self._auto_thread.start()
+        auto_settings = ProjectSettings.from_dict(self.settings.to_dict())
+        auto_settings.label_presets = list(
+            self.dataset_parser_presets or self.settings.label_presets
+        )
+        self._auto_cancel_requested = False
+        self._auto_thread = QThread(self)
+        records = None if self.dataset_index_repository is not None else self.state.images
+        self._auto_worker = AutoLabelWorker(records, auto_settings)
+        self.auto_task_id = self.task_manager.start(
+            "自动标注", self.cancel_auto_label, len(self.state.images),
+        )
+        self._auto_worker.moveToThread(self._auto_thread)
+        self._auto_thread.started.connect(self._auto_worker.run)
+        self._auto_worker.modelReady.connect(self._auto_model_ready)
+        self._auto_worker.progress.connect(self._auto_progress)
+        self._auto_worker.finished.connect(self._auto_finished)
+        self._auto_worker.failed.connect(self._auto_failed)
+        self._auto_worker.finished.connect(self._auto_thread.quit)
+        self._auto_worker.failed.connect(self._auto_thread.quit)
+        self._auto_thread.finished.connect(self._auto_thread_finished)
+        self._set_status_progress("自动标注", 0, len(self.state.images))
+        self._auto_thread.start()
 
-    def _auto_model_ready(self, task: str, keypoint_names: list[str]) -> None:
+    def _auto_model_ready(
+        self, task: str, keypoint_names: list[str], class_names: list[str],
+    ) -> None:
         if self._auto_worker is not None:
             try:
                 self._auto_worker.annotationReady.connect(self._auto_annotation_ready, Qt.ConnectionType.UniqueConnection)
             except (TypeError, RuntimeError):
                 pass
-        if task == "pose":
-            self.settings.dataset_task = "yolo_pose"
-            self.canvas.set_keypoint_schema(keypoint_names)
+        if class_names:
+            colors = {preset.class_id: preset.color for preset in self.dataset_parser_presets}
+            self.dataset_parser_presets = [
+                LabelPreset(
+                    name, class_id,
+                    colors.get(class_id, label_color(name)),
+                )
+                for class_id, name in enumerate(class_names)
+            ]
+        if task == "pose" and self.settings.annotation_format in {"yolo", "coco"}:
+            if self.settings.annotation_format == "yolo":
+                self.settings.dataset_task = "yolo_pose"
             self._apply_annotation_capabilities()
+            self.canvas.set_keypoint_schema(keypoint_names)
 
     def _auto_annotation_ready(self, path: str, annotations: list[Annotation]) -> None:
         """Commit worker output on the GUI thread instead of mutating records in a worker."""
@@ -1261,6 +1294,8 @@ class MainWindow(QMainWindow):
         record.annotations = [Annotation.from_dict(item.to_dict()) for item in annotations]
         record.status = "labeled" if record.annotations else "unlabeled"
         record.metadata_loaded = True
+        if self.state.current_image is record:
+            self.canvas.load_image(QImage(str(record.path)), record.annotations)
         self.image_panel.update_record(record)
 
     def _auto_progress(self, current: int, total: int) -> None:
@@ -1271,8 +1306,11 @@ class MainWindow(QMainWindow):
     def _auto_finished(self) -> None:
         if self._auto_cancel_requested: return
         self.status_progress_host.setVisible(False)
-        self.refresh_image_list(); self.refresh_stats(); self._set_dirty(True)
+        self.refresh_image_list(); self.refresh_stats()
         self._export_coco_checkpoint()
+        self._dataset_statistics = None
+        self._statistics_completed = False
+        self._start_dataset_statistics()
         AppDialog.information("自动标注", "自动标注完成", self)
     def _auto_failed(self, message: str) -> None:
         if self._auto_cancel_requested: return
