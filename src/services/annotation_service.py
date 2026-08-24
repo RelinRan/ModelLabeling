@@ -303,6 +303,54 @@ class AnnotationService:
             temporary_path = Path(temporary.name)
         os.replace(temporary_path, path)
 
+    def save_coco_batch(self, records: list[tuple[Path, list[Annotation]]], directory: Path, presets: list[LabelPreset]) -> None:
+        """Write one complete COCO document for a batch conversion."""
+        document = {"info": {"description": "ModelLabeling dataset"}, "licenses": [], "images": [], "annotations": [], "categories": []}
+        category_by_name: dict[str, int] = {}
+        for preset in presets:
+            category_id = int(preset.class_id) + 1
+            document["categories"].append({"id": category_id, "name": preset.name, "supercategory": "object"})
+            category_by_name[preset.name] = category_id
+        next_annotation_id = 1
+        for image_id, (image_path, annotations) in enumerate(records, start=1):
+            with Image.open(image_path) as source_image:
+                width, height = source_image.size
+            document["images"].append({"id": image_id, "file_name": image_path.name, "width": width, "height": height})
+            for annotation in annotations:
+                if annotation.label not in category_by_name:
+                    raise ValueError(f"label is not in COCO categories: {annotation.label}")
+                points = annotation.points
+                if annotation.shape_type == ShapeType.KEYPOINT and len(points) < 2:
+                    points = [keypoint.point for keypoint in annotation.keypoints if keypoint.visibility > 0]
+                rect = rect_from_points(points)
+                box_width, box_height = rect.width(), rect.height()
+                item = {
+                    "id": next_annotation_id, "image_id": image_id,
+                    "category_id": category_by_name[annotation.label],
+                    "bbox": [rect.left(), rect.top(), box_width, box_height],
+                    "area": box_width * box_height, "iscrowd": 0, "segmentation": [],
+                }
+                if annotation.shape_type == ShapeType.POLYGON:
+                    item["segmentation"] = [[coordinate for point in annotation.points for coordinate in (point.x(), point.y())]]
+                    item["area"] = self._polygon_area(annotation.points)
+                if annotation.keypoints:
+                    item["keypoints"] = [coordinate for keypoint in annotation.keypoints for coordinate in (keypoint.point.x(), keypoint.point.y(), keypoint.visibility)]
+                    item["num_keypoints"] = sum(keypoint.visibility > 0 for keypoint in annotation.keypoints)
+                    category = next(category for category in document["categories"] if category["id"] == category_by_name[annotation.label])
+                    if not category.get("keypoints"):
+                        category["keypoints"] = [keypoint.name for keypoint in annotation.keypoints]
+                        category["skeleton"] = [[start + 1, end + 1] for start, end in COCO_PERSON_SKELETON] if len(annotation.keypoints) == 17 else []
+                document["annotations"].append(item)
+                next_annotation_id += 1
+        directory.mkdir(parents=True, exist_ok=True)
+        store = CocoAnnotationStore(directory)
+        store.replace_document(document)
+        path = directory / "annotations.json"
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory, prefix=".annotations-", suffix=".tmp", delete=False) as temporary:
+            temporary.write(json.dumps(document, ensure_ascii=False, indent=2))
+            temporary_path = Path(temporary.name)
+        os.replace(temporary_path, path)
+
     @staticmethod
     def _polygon_area(points: list[QPointF]) -> float:
         if len(points) < 3:

@@ -101,6 +101,31 @@ class ConversionService:
             annotation_dir=annotation_dir,
             label_presets=presets,
         )
+        if output_format == "coco":
+            batch: list[tuple[Path, list]] = []
+            for index, image_path in enumerate(images, start=1):
+                if cancel_callback and cancel_callback():
+                    break
+                try:
+                    result = self.annotation_service.load(image_path, annotation_dir, settings)
+                    if result.error:
+                        raise ValueError(result.error)
+                    batch.append((image_path, result.annotations))
+                    shutil.copy2(image_path, output_image_dir / image_path.name)
+                    report.succeeded += 1
+                except Exception as exc:
+                    report.failed += 1
+                    report.errors.append(f"{image_path.name}: {exc}")
+                if progress_callback:
+                    progress_callback(index, len(images))
+            if report.failed == 0 and len(batch) == len(images):
+                try:
+                    self.annotation_service.save_coco_batch(batch, output_annotation_dir, presets)
+                except Exception as exc:
+                    report.errors.append(str(exc))
+                    report.failed = len(batch)
+                    report.succeeded = 0
+            return report
         keypoint_names: list[str] = []
         total = len(images)
         for index, image_path in enumerate(images, start=1):
