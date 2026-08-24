@@ -1,5 +1,4 @@
 from pathlib import Path
-
 from src.models.annotation import LabelPreset
 from src.models.project import ProjectSettings
 from src.services.workers import AutoLabelWorker

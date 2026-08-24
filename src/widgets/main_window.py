@@ -1292,6 +1292,23 @@ class MainWindow(QMainWindow):
 
     def _auto_annotation_ready(self, path: str, annotations: list[Annotation]) -> None:
         """Commit worker output on the GUI thread instead of mutating records in a worker."""
+        image_path = Path(path)
+        if self.dataset_index_repository is not None:
+            annotation_path = None
+            if self.settings.annotation_dir:
+                if self.settings.annotation_format == "coco":
+                    annotation_path = Path(self.settings.annotation_dir) / ".model_labeling.sqlite3"
+                elif self.settings.image_dir:
+                    try:
+                        relative = image_path.relative_to(self.settings.image_dir)
+                        suffix = ".xml" if self.settings.annotation_format == "voc" else ".txt"
+                        annotation_path = Path(self.settings.annotation_dir) / relative.with_suffix(suffix)
+                    except ValueError:
+                        annotation_path = None
+            self.dataset_index_repository.update_annotation(
+                image_path, annotation_path,
+                (annotation.label for annotation in annotations),
+            )
         record = next((item for item in self.state.images if str(item.path) == path), None)
         if record is None:
             return
@@ -1328,6 +1345,11 @@ class MainWindow(QMainWindow):
         if self._auto_worker: self._auto_worker.cancelled = True
     def _auto_thread_finished(self) -> None:
         self.status_progress_host.setVisible(False); self.task_manager.finish(self.auto_task_id); self.auto_task_id = None; self._auto_thread = self._auto_worker = None; self._maybe_close_task_list()
+        if self._auto_cancel_requested:
+            self.refresh_image_list()
+            self._dataset_statistics = None
+            self._statistics_completed = False
+            self._start_dataset_statistics()
 
     def _maybe_close_task_list(self) -> None:
         if not self.task_manager.tasks(): self._close_task_list()
