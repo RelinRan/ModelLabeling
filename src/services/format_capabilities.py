@@ -91,6 +91,16 @@ def validate_annotations(
         raise UnsupportedAnnotationError(
             f"{capabilities.display_name} does not support: {', '.join(unsupported)}"
         )
+    if capabilities.task == DatasetTask.YOLO_SEGMENTATION:
+        multipart = [
+            annotation for annotation in annotations
+            if annotation.shape_type == ShapeType.POLYGON
+            and len(annotation.polygon_parts) > 1
+        ]
+        if multipart:
+            raise UnsupportedAnnotationError(
+                "YOLO Segmentation does not support multipart polygon instances"
+            )
     if capabilities.task == DatasetTask.YOLO_POSE:
         counts = {len(annotation.keypoints) for annotation in annotations}
         if 0 in counts:

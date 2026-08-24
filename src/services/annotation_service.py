@@ -230,11 +230,18 @@ class AnnotationService:
                 annotations.append(Annotation(ShapeType.KEYPOINT, category_name, bbox_points, color=color, keypoints=parsed_keypoints, schema_name="COCO Keypoints"))
                 continue
             segmentation = item.get("segmentation")
-            if isinstance(segmentation, list) and segmentation and isinstance(segmentation[0], list) and len(segmentation[0]) >= 6:
-                values = segmentation[0]
-                polygon = [QPointF(float(values[index]), float(values[index + 1])) for index in range(0, len(values) - 1, 2)]
-                annotations.append(Annotation(ShapeType.POLYGON, category_name, polygon, color=color))
-                continue
+            if isinstance(segmentation, list) and segmentation and isinstance(segmentation[0], list):
+                parts = [
+                    [QPointF(float(values[index]), float(values[index + 1])) for index in range(0, len(values) - 1, 2)]
+                    for values in segmentation
+                    if len(values) >= 6
+                ]
+                if parts:
+                    annotations.append(Annotation(
+                        ShapeType.POLYGON, category_name, parts[0], color=color,
+                        polygon_parts=parts,
+                    ))
+                    continue
             if bbox_points:
                 annotations.append(Annotation(ShapeType.RECTANGLE, category_name, bbox_points, color=color))
         return annotations
@@ -265,12 +272,12 @@ class AnnotationService:
                 "segmentation": [],
             }
             if annotation.shape_type == ShapeType.POLYGON:
-                item["segmentation"] = [[
-                    coordinate
-                    for point in annotation.points
-                    for coordinate in (point.x(), point.y())
-                ]]
-                item["area"] = self._polygon_area(annotation.points)
+                parts = annotation.polygon_parts or [annotation.points]
+                item["segmentation"] = [
+                    [coordinate for point in part for coordinate in (point.x(), point.y())]
+                    for part in parts
+                ]
+                item["area"] = sum(self._polygon_area(part) for part in parts)
             if annotation.keypoints:
                 item["keypoints"] = [
                     coordinate
@@ -335,8 +342,12 @@ class AnnotationService:
                     "area": box_width * box_height, "iscrowd": 0, "segmentation": [],
                 }
                 if annotation.shape_type == ShapeType.POLYGON:
-                    item["segmentation"] = [[coordinate for point in annotation.points for coordinate in (point.x(), point.y())]]
-                    item["area"] = self._polygon_area(annotation.points)
+                    parts = annotation.polygon_parts or [annotation.points]
+                    item["segmentation"] = [
+                        [coordinate for point in part for coordinate in (point.x(), point.y())]
+                        for part in parts
+                    ]
+                    item["area"] = sum(self._polygon_area(part) for part in parts)
                 if annotation.keypoints:
                     item["keypoints"] = [coordinate for keypoint in annotation.keypoints for coordinate in (keypoint.point.x(), keypoint.point.y(), keypoint.visibility)]
                     item["num_keypoints"] = sum(keypoint.visibility > 0 for keypoint in annotation.keypoints)

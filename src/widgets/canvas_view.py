@@ -48,9 +48,10 @@ class KeypointMarker(QGraphicsEllipseItem):
 class PolygonVertexMarker(QGraphicsEllipseItem):
     """Small, transform-invariant handles used to edit polygon vertices."""
 
-    def __init__(self, index: int, parent: QGraphicsItem) -> None:
+    def __init__(self, index: int, parent: QGraphicsItem, part_index: int = 0) -> None:
         super().__init__(-4, -4, 8, 8, parent)
         self.vertex_index = index
+        self.part_index = part_index
         self.setPen(QPen(QColor("#ffffff"), 1))
         self.setBrush(QColor("#00d9ff"))
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
@@ -83,6 +84,7 @@ class AnnotationItem(QGraphicsPolygonItem):
         self.handles = [ResizeHandle(index, self) for index in range(4)]
         self.keypoint_markers: list[KeypointMarker] = []
         self.polygon_markers: list[PolygonVertexMarker] = []
+        self.polygon_part_items: list[QGraphicsPolygonItem] = []
         self.skeleton_lines: list[QGraphicsLineItem] = []
         self.refresh()
 
@@ -96,6 +98,10 @@ class AnnotationItem(QGraphicsPolygonItem):
             if marker.scene():
                 marker.scene().removeItem(marker)
         self.polygon_markers = []
+        for part_item in self.polygon_part_items:
+            if part_item.scene():
+                part_item.scene().removeItem(part_item)
+        self.polygon_part_items = []
         for line in self.skeleton_lines:
             if line.scene():
                 line.scene().removeItem(line)
@@ -123,21 +129,31 @@ class AnnotationItem(QGraphicsPolygonItem):
                 handle.setPos(corner)
                 handle.setVisible(self.isSelected() and not rect.isNull())
         else:
-            polygon = QPolygonF(self.annotation.points)
-            self.text_item.setPos(polygon_bounds(self.annotation.points).topLeft() + QPointF(5, 5))
+            parts = self.annotation.polygon_parts or [self.annotation.points]
+            polygon = QPolygonF(parts[0])
+            all_points = [point for part in parts for point in part]
+            self.text_item.setPos(polygon_bounds(all_points).topLeft() + QPointF(5, 5))
             for handle in self.handles:
                 handle.hide()
-            for index, point in enumerate(self.annotation.points):
-                marker = PolygonVertexMarker(index, self)
-                marker.setPos(point)
-                marker.setVisible(self.isSelected())
-                self.polygon_markers.append(marker)
+            for part_index, part in enumerate(parts):
+                if part_index:
+                    part_item = QGraphicsPolygonItem(QPolygonF(part), self)
+                    part_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+                    self.polygon_part_items.append(part_item)
+                for index, point in enumerate(part):
+                    marker = PolygonVertexMarker(index, self, part_index)
+                    marker.setPos(point)
+                    marker.setVisible(self.isSelected())
+                    self.polygon_markers.append(marker)
         self.setPolygon(polygon)
         color = QColor(self.annotation.color)
         self.setPen(QPen(color, self.line_width))
         fill = QColor(color)
         fill.setAlpha(72 if self.isSelected() else 0)
         self.setBrush(fill)
+        for part_item in self.polygon_part_items:
+            part_item.setPen(QPen(color, self.line_width))
+            part_item.setBrush(fill)
         if self.annotation.shape_type == ShapeType.KEYPOINT and len(self.annotation.keypoints) >= 17:
             from src.models.keypoint import COCO_PERSON_SKELETON
             points = [item.point for item in self.annotation.keypoints]
@@ -206,7 +222,8 @@ class CanvasView(QGraphicsView):
         self.drag_start = QPointF()
         self.drag_points: list[QPointF] = []
         self.drag_keypoint_index: int | None = None
-        self.drag_vertex_index: int | None = None
+        self.drag_vertex_index: tuple[int, int] | None = None
+        self.drag_polygon_parts: list[list[QPointF]] = []
         self.drag_changed = False
         self.pending_keypoints: list[Keypoint] = []
         self.keypoint_schema: list[str] = list(COCO_PERSON_KEYPOINTS)
@@ -461,16 +478,22 @@ class CanvasView(QGraphicsView):
             return None
         return next((index for index, keypoint in enumerate(item.annotation.keypoints) if (keypoint.point - point).manhattanLength() <= 10), None)
 
-    def _polygon_vertex_index(self, item: AnnotationItem, point: QPointF) -> int | None:
+    def _polygon_vertex_index(self, item: AnnotationItem, point: QPointF) -> tuple[int, int] | None:
         if item.annotation.shape_type != ShapeType.POLYGON:
             return None
-        return next((index for index, vertex in enumerate(item.annotation.points) if (vertex - point).manhattanLength() <= 10), None)
+        parts = item.annotation.polygon_parts or [item.annotation.points]
+        return next(
+            ((part_index, index) for part_index, part in enumerate(parts)
+             for index, vertex in enumerate(part) if (vertex - point).manhattanLength() <= 10),
+            None,
+        )
 
     def _begin_box_drag(self, item: AnnotationItem, point: QPointF) -> None:
         self._select_item(item)
         self.drag_item = item
         self.drag_start = point
         self.drag_points = list(item.annotation.points)
+        self.drag_polygon_parts = [list(part) for part in item.annotation.polygon_parts]
         self.drag_keypoint_index = self._keypoint_index(item, point)
         vertex_index = self._polygon_vertex_index(item, point)
         item.drag_corner = self._corner_index(item, point)
@@ -491,11 +514,21 @@ class CanvasView(QGraphicsView):
             keypoint = annotation.keypoints[self.drag_keypoint_index]
             keypoint.point = point
         elif self.drag_mode == "vertex" and self.drag_vertex_index is not None:
-            updated = list(annotation.points)
-            updated[self.drag_vertex_index] = point
-            annotation.points = updated
+            part_index, vertex_index = self.drag_vertex_index
+            parts = [list(part) for part in (annotation.polygon_parts or [annotation.points])]
+            parts[part_index][vertex_index] = point
+            annotation.polygon_parts = parts
+            annotation.points = list(parts[0])
         elif self.drag_mode == "move":
-            annotation.points = [QPointF(p.x() + dx, p.y() + dy) for p in self.drag_points]
+            if annotation.shape_type == ShapeType.POLYGON:
+                source_parts = self.drag_polygon_parts or [self.drag_points]
+                annotation.polygon_parts = [
+                    [QPointF(p.x() + dx, p.y() + dy) for p in part]
+                    for part in source_parts
+                ]
+                annotation.points = list(annotation.polygon_parts[0])
+            else:
+                annotation.points = [QPointF(p.x() + dx, p.y() + dy) for p in self.drag_points]
             if annotation.shape_type == ShapeType.KEYPOINT:
                 annotation.keypoints = [Keypoint(item.name, QPointF(item.point.x() + dx, item.point.y() + dy), item.visibility) for item in annotation.keypoints]
         else:
@@ -590,7 +623,7 @@ class CanvasView(QGraphicsView):
     def mouseReleaseEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton and self.drag_item:
             changed = self.drag_changed
-            self.drag_item = None; self.drag_mode = ""; self.drag_points = []; self.drag_vertex_index = None; self.drag_changed = False
+            self.drag_item = None; self.drag_mode = ""; self.drag_points = []; self.drag_polygon_parts = []; self.drag_vertex_index = None; self.drag_changed = False
             if changed:
                 self.annotationChanged.emit()
                 self.dirtyChanged.emit(True)

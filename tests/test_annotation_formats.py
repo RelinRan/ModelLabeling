@@ -238,3 +238,42 @@ def test_coco_store_rejects_conflicting_category_keypoint_schema(tmp_path):
     document = store.read_document()
     assert len(document["images"]) == 1
     assert document["categories"][0]["keypoints"] == ["nose", "eye"]
+
+
+def test_coco_multipart_polygon_round_trip(tmp_path):
+    image = tmp_path / "sample.jpg"
+    annotations_dir = tmp_path / "annotations"
+    annotations_dir.mkdir()
+    _sample_image(image)
+    parts = [
+        [QPointF(10, 10), QPointF(30, 10), QPointF(20, 30)],
+        [QPointF(100, 100), QPointF(130, 100), QPointF(115, 130)],
+    ]
+    annotation = Annotation(
+        ShapeType.POLYGON, "person", parts[0], polygon_parts=parts,
+    )
+    settings = _settings(tmp_path, "coco", "coco", [LabelPreset("person", 0, "#00e5ff")])
+    service = AnnotationService()
+
+    assert service.save(image, [annotation], annotations_dir, settings).ok
+    loaded = service.load(image, annotations_dir, settings)
+
+    assert not loaded.error
+    assert len(loaded.annotations) == 1
+    assert len(loaded.annotations[0].polygon_parts) == 2
+    document = CocoAnnotationStore(annotations_dir).read_document()
+    assert len(document["annotations"][0]["segmentation"]) == 2
+    assert document["annotations"][0]["area"] == pytest.approx(650.0)
+
+
+def test_yolo_segmentation_rejects_multipart_polygon():
+    parts = [
+        [QPointF(10, 10), QPointF(30, 10), QPointF(20, 30)],
+        [QPointF(100, 100), QPointF(130, 100), QPointF(115, 130)],
+    ]
+    annotation = Annotation(
+        ShapeType.POLYGON, "person", parts[0], polygon_parts=parts,
+    )
+
+    with pytest.raises(UnsupportedAnnotationError, match="multipart"):
+        validate_annotations([annotation], "yolo", "yolo_segmentation")

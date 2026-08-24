@@ -78,6 +78,7 @@ class Annotation:
     source: str = "manual"
     keypoints: list[Keypoint] = field(default_factory=list)
     schema_name: str | None = None
+    polygon_parts: list[list[QPointF]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.shape_type = ShapeType(self.shape_type)
@@ -90,6 +91,14 @@ class Annotation:
             raise ValueError("keypoint annotation requires at least one keypoint")
         if self.shape_type == ShapeType.KEYPOINT and len(self.points) not in (0, 2):
             raise ValueError("keypoint annotation points must be an optional bbox")
+        if self.shape_type == ShapeType.POLYGON:
+            if self.polygon_parts:
+                self.polygon_parts = [list(part) for part in self.polygon_parts if len(part) >= 3]
+                if not self.polygon_parts:
+                    raise ValueError("polygon annotation requires at least one valid part")
+                self.points = list(self.polygon_parts[0])
+            else:
+                self.polygon_parts = [list(self.points)]
         self.color = label_color(self.label) if not self.color else str(self.color)
         if self.confidence is not None:
             self.confidence = max(0.0, min(1.0, float(self.confidence)))
@@ -104,6 +113,10 @@ class Annotation:
             "source": self.source,
             "keypoints": [item.to_dict() for item in self.keypoints],
             "schema_name": self.schema_name,
+            "polygon_parts": [
+                [_point_to_dict(point) for point in part]
+                for part in self.polygon_parts
+            ],
         }
 
     @classmethod
@@ -117,6 +130,10 @@ class Annotation:
             source=value.get("source", "manual"),
             keypoints=[Keypoint.from_dict(item) for item in value.get("keypoints", [])],
             schema_name=value.get("schema_name"),
+            polygon_parts=[
+                [_point_from_dict(point) for point in part]
+                for part in value.get("polygon_parts", [])
+            ],
         )
 
 
