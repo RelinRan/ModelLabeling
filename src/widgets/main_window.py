@@ -839,6 +839,9 @@ class MainWindow(QMainWindow):
         self.dataset_root = self.dataset_session.root; self.settings.annotation_format = self.dataset_session.format_name; self.settings.dataset_task = self.dataset_session.task_name; self.settings.image_dir = self.dataset_session.image_dir; self.settings.annotation_dir = self.dataset_session.annotation_dir; self._apply_annotation_capabilities(); self._update_window_title(); self.refresh_stats(); self._remember_history(root); self._start_dataset_scan(self.dataset_session.image_dir, self.dataset_session.annotation_dir)
 
     def _start_dataset_scan(self, image_dir: Path, annotation_dir: Path) -> None:
+        # Invalidate queued callbacks before stopping the previous workers.
+        # Qt may deliver a queued result while the old thread is winding down.
+        self.dataset_session_id = uuid.uuid4().hex
         self._stop_dataset_workers_for_switch()
         self.dataset_total_images = 0
         self.dataset_indexed_images = 0
@@ -857,15 +860,6 @@ class MainWindow(QMainWindow):
         self._restart_statistics_after_finish = False
         if self._stats_thread is not None and self._stats_thread.isRunning():
             self._stats_worker.cancelled = True
-            for signal, slot in (
-                (self._stats_worker.progress, self._dataset_statistics_progress),
-                (self._stats_worker.finished, self._dataset_statistics_finished),
-                (self._stats_worker.failed, self._dataset_statistics_failed),
-            ):
-                try:
-                    signal.disconnect(slot)
-                except (RuntimeError, TypeError):
-                    pass
             try:
                 self._stats_thread.finished.disconnect(self._stats_thread_finished)
             except (RuntimeError, TypeError):
@@ -1072,6 +1066,7 @@ class MainWindow(QMainWindow):
         if self._stats_thread is not None or not self.settings.image_dir or not self.settings.annotation_dir:
             return
         self._statistics_completed = False
+        session_id = self.dataset_session_id
         self._set_status_progress("统计", 0, self.dataset_total_images)
         self._stats_thread = QThread(self)
         self._stats_worker = DatasetStatisticsWorker(
@@ -1080,26 +1075,38 @@ class MainWindow(QMainWindow):
         )
         self._stats_worker.moveToThread(self._stats_thread)
         self._stats_thread.started.connect(self._stats_worker.run)
-        self._stats_worker.progress.connect(self._dataset_statistics_progress)
-        self._stats_worker.finished.connect(self._dataset_statistics_finished)
-        self._stats_worker.failed.connect(self._dataset_statistics_failed)
+        self._stats_worker.progress.connect(
+            lambda current, total, snapshot, sid=session_id: self._dataset_statistics_progress(current, total, snapshot, sid)
+        )
+        self._stats_worker.finished.connect(
+            lambda snapshot, sid=session_id: self._dataset_statistics_finished(snapshot, sid)
+        )
+        self._stats_worker.failed.connect(
+            lambda message, sid=session_id: self._dataset_statistics_failed(message, sid)
+        )
         self._stats_worker.finished.connect(self._stats_thread.quit)
         self._stats_worker.failed.connect(self._stats_thread.quit)
         self._stats_thread.finished.connect(self._stats_thread_finished)
         self._stats_thread.start()
 
-    def _dataset_statistics_progress(self, current: int, total: int, snapshot: dict) -> None:
+    def _dataset_statistics_progress(self, current: int, total: int, snapshot: dict, session_id: str | None = None) -> None:
+        if session_id is not None and session_id != self.dataset_session_id:
+            return
         self._dataset_statistics = snapshot
         percent = int(current / total * 100) if total else 0
         self._set_status_progress("统计", current, total, percent)
 
-    def _dataset_statistics_finished(self, snapshot: dict) -> None:
+    def _dataset_statistics_finished(self, snapshot: dict, session_id: str | None = None) -> None:
+        if session_id is not None and session_id != self.dataset_session_id:
+            return
         self._dataset_statistics = snapshot
         self._statistics_completed = True
         total = int(snapshot.get("total_images", 0)) if snapshot else 0
         self._set_status_progress("统计", total, total, 100 if total else 0)
 
-    def _dataset_statistics_failed(self, message: str) -> None:
+    def _dataset_statistics_failed(self, message: str, session_id: str | None = None) -> None:
+        if session_id is not None and session_id != self.dataset_session_id:
+            return
         self._dataset_statistics = None
         self._statistics_completed = True
 
