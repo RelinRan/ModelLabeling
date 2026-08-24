@@ -97,6 +97,7 @@ class ConversionService:
         if output_format == "yolo":
             self._write_yolo_classes(options.output_path, presets)
         settings = ProjectSettings(
+            image_dir=image_dir,
             annotation_format=source_format,
             dataset_task=source_task,
             annotation_dir=annotation_dir,
@@ -112,7 +113,10 @@ class ConversionService:
                     if result.error:
                         raise ValueError(result.error)
                     batch.append((image_path, result.annotations))
-                    shutil.copy2(image_path, output_image_dir / image_path.name)
+                    relative = image_path.relative_to(image_dir)
+                    output_image_path = output_image_dir / relative
+                    output_image_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(image_path, output_image_path)
                     report.succeeded += 1
                 except Exception as exc:
                     report.failed += 1
@@ -121,7 +125,9 @@ class ConversionService:
                     progress_callback(index, len(images))
             if report.failed == 0 and len(batch) == len(images):
                 try:
-                    self.annotation_service.save_coco_batch(batch, output_annotation_dir, presets)
+                    self.annotation_service.save_coco_batch(
+                        batch, output_annotation_dir, presets, image_root=image_dir,
+                    )
                 except Exception as exc:
                     report.errors.append(str(exc))
                     report.failed = len(batch)
@@ -134,8 +140,9 @@ class ConversionService:
             if cancel_callback and cancel_callback():
                 break
             try:
-                target = None if output_format == "coco" else output_annotation_dir / (
-                    f"{image_path.stem}.xml" if output_format == "voc" else f"{image_path.stem}.txt"
+                relative = image_path.relative_to(image_dir)
+                target = None if output_format == "coco" else output_annotation_dir / relative.with_suffix(
+                    ".xml" if output_format == "voc" else ".txt"
                 )
                 if target is not None and target.exists() and not options.overwrite:
                     report.skipped += 1
@@ -153,6 +160,7 @@ class ConversionService:
                             elif schema != pose_schema:
                                 raise ValueError("inconsistent keypoint schema for YOLO Pose output")
                     output_settings = ProjectSettings(
+                        image_dir=image_dir,
                         annotation_format=output_format,
                         dataset_task=output_task,
                         annotation_dir=output_annotation_dir,
@@ -162,7 +170,9 @@ class ConversionService:
                     if not saved.ok:
                         raise OSError(saved.error or "conversion save failed")
                     if structured_output:
-                        shutil.copy2(image_path, output_image_dir / image_path.name)
+                        output_image_path = output_image_dir / relative
+                        output_image_path.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(image_path, output_image_path)
                     report.succeeded += 1
             except Exception as exc:
                 report.failed += 1

@@ -146,7 +146,9 @@ class AnnotationService:
         if adapter.format_name == "voc":
             return LoadResult(self._load_voc(image_path, directory, settings.label_presets, index))
         if adapter.format_name == "coco":
-            return LoadResult(self._load_coco(image_path, directory, settings.label_presets, index))
+            return LoadResult(self._load_coco(
+                image_path, directory, settings.label_presets, index, settings.image_dir,
+            ))
         task = adapter.task.value
         if task == "yolo_pose":
             return LoadResult(self._load_yolo_pose(image_path, directory, settings.label_presets, image_size, index))
@@ -217,20 +219,44 @@ class AnnotationService:
         store.replace_document(document)
         return document
 
-    def _load_coco(self, image_path: Path, directory: Path, presets: list[LabelPreset], index: DatasetAnnotationIndex | None = None) -> list[Annotation]:
+    def _load_coco(
+        self,
+        image_path: Path,
+        directory: Path,
+        presets: list[LabelPreset],
+        index: DatasetAnnotationIndex | None = None,
+        image_root: Path | None = None,
+    ) -> list[Annotation]:
+        relative_name = image_path.name
+        if image_root is not None:
+            try:
+                relative_name = image_path.relative_to(image_root).as_posix()
+            except ValueError:
+                pass
         if index is None:
             document = self._load_coco_document(directory)
             image_record = next(
                 (item for item in document.get("images", [])
-                 if Path(str(item.get("file_name", ""))).name == image_path.name
-                 or str(item.get("file_name", "")) == image_path.name),
+                 if str(item.get("file_name", "")).replace("\\", "/") == relative_name),
                 None,
             )
+            if image_record is None:
+                basename_matches = [
+                    item for item in document.get("images", [])
+                    if Path(str(item.get("file_name", ""))).name == image_path.name
+                ]
+                image_record = basename_matches[0] if len(basename_matches) == 1 else None
             annotation_items = document.get("annotations", [])
             categories = {item.get("id"): item.get("name", f"class_{item.get('id')}") for item in document.get("categories", [])}
             keypoint_names = {item.get("id"): list(item.get("keypoints", [])) for item in document.get("categories", [])}
         else:
-            image_record = index.coco_images.get(image_path.name)
+            image_record = index.coco_images.get(relative_name)
+            if image_record is None:
+                basename_matches = [
+                    item for name, item in index.coco_images.items()
+                    if "/" in name and Path(name).name == image_path.name
+                ]
+                image_record = basename_matches[0] if len(basename_matches) == 1 else None
             annotation_items = index.coco_annotations.get(image_record.get("id"), []) if image_record else []
             categories = index.coco_categories
             keypoint_names = index.coco_keypoint_names
@@ -345,7 +371,13 @@ class AnnotationService:
         return store.export_json(service._coco_json_path(directory))
 
 
-    def save_coco_batch(self, records: list[tuple[Path, list[Annotation]]], directory: Path, presets: list[LabelPreset]) -> None:
+    def save_coco_batch(
+        self,
+        records: list[tuple[Path, list[Annotation]]],
+        directory: Path,
+        presets: list[LabelPreset],
+        image_root: Path | None = None,
+    ) -> None:
         """Write one complete COCO document for a batch conversion."""
         validate_annotations(
             [annotation for _image_path, annotations in records for annotation in annotations],
@@ -362,7 +394,13 @@ class AnnotationService:
         for image_id, (image_path, annotations) in enumerate(records, start=1):
             with Image.open(image_path) as source_image:
                 width, height = source_image.size
-            document["images"].append({"id": image_id, "file_name": image_path.name, "width": width, "height": height})
+            file_name = image_path.name
+            if image_root is not None:
+                try:
+                    file_name = image_path.relative_to(image_root).as_posix()
+                except ValueError:
+                    pass
+            document["images"].append({"id": image_id, "file_name": file_name, "width": width, "height": height})
             for annotation in annotations:
                 if annotation.label not in category_by_name:
                     raise ValueError(f"label is not in COCO categories: {annotation.label}")
