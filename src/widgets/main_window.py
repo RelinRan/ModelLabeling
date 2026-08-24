@@ -10,7 +10,6 @@ import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from collections import Counter
-from dataclasses import dataclass
 
 from PySide6.QtCore import QEvent, QSettings, QThread, Qt, QTimer, QObject, Signal
 from PySide6.QtGui import QColor, QCursor, QFontMetrics, QIcon, QImage, QKeySequence, QShortcut
@@ -25,7 +24,7 @@ from src.services.dataset_index import DatasetIndexRepository, IndexedImage
 from src.services.label_group_store import LabelGroupStore
 from src.services.project_service import ProjectService
 from src.services.operation_coordinator import OperationCoordinator
-from src.services.dataset_session import DatasetSession
+from src.services.dataset_session import DatasetScanResult, DatasetSession
 from src.services.onnx_service import YoloOnnxDetector
 from src.services.format_capabilities import CAPABILITIES, task_for_format
 from .annotation_edit_dialog import AnnotationEditDialog
@@ -58,15 +57,6 @@ DEFAULT_LABEL_NAMES = (
 def default_label_presets() -> list[LabelPreset]:
     from PySide6.QtGui import QColor
     return [LabelPreset(name, index, QColor.fromHsv((index * 47) % 360, 210, 245).name()) for index, name in enumerate(DEFAULT_LABEL_NAMES)]
-
-
-@dataclass
-class DatasetScanResult:
-    records: list
-    presets: list[LabelPreset] = None
-    total_images: int = 0
-    append_only: bool = False
-    session_id: str = ""
 
 
 class DatasetCountWorker(QObject):

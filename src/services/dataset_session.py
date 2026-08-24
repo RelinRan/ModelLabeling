@@ -7,6 +7,15 @@ from .dataset_detector import DetectedDataset
 
 
 @dataclass
+class DatasetScanResult:
+    records: list
+    presets: list | None = None
+    total_images: int = 0
+    append_only: bool = False
+    session_id: str = ""
+
+
+@dataclass
 class DatasetSession:
     """Canonical dataset context shared by UI services.
 
@@ -31,4 +40,3 @@ class DatasetSession:
             format_name=detected.format_name,
             task_name=detected.task_name or detected.format_name,
         )
-
