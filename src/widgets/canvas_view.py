@@ -339,7 +339,8 @@ class CanvasView(QGraphicsView):
             self.mode = next(iter(self.enabled_shapes), ShapeType.RECTANGLE)
 
     def set_keypoint_schema(self, names: list[str]) -> None:
-        self.keypoint_schema = [str(name).strip() for name in names if str(name).strip()]
+        parsed = [str(name).strip() for name in names if str(name).strip()]
+        self.keypoint_schema = parsed or list(COCO_PERSON_KEYPOINTS)
 
     def set_current_label(self, label: str, color: str | None = None) -> None:
         self.current_label = label

@@ -25,6 +25,7 @@ from src.services.operation_coordinator import OperationCoordinator
 from src.services.dataset_session import DatasetScanResult, DatasetSession
 from src.services.workers import AutoLabelWorker, DatasetAnnotationSaveWorker, DatasetCountWorker, DatasetScanWorker, DatasetStatisticsWorker, SaveWorker, SingleImageAnnotationWorker
 from src.services.format_capabilities import CAPABILITIES, task_for_format
+from src.services.yolo_metadata import yolo_keypoint_names
 from .annotation_edit_dialog import AnnotationEditDialog
 from .common_dialogs import AppDialog
 from .conversion_dialog import ConversionDialog, ConversionWorker
@@ -346,6 +347,13 @@ class MainWindow(QMainWindow):
             None,
         )
         self.canvas.set_mode(configured or next(iter(supported), ShapeType.RECTANGLE))
+        keypoint_names = []
+        if task.value == "yolo_pose" and self.settings.annotation_dir:
+            try:
+                keypoint_names = yolo_keypoint_names(self.settings.annotation_dir)
+            except (OSError, ValueError):
+                keypoint_names = []
+        self.canvas.set_keypoint_schema(keypoint_names)
 
     def _apply_live_settings(self, settings: ProjectSettings) -> None:
         self.settings = settings; self.state.settings = settings; self._apply_annotation_capabilities(); self._apply_language(); self._build_menu(); self._apply_style(); self._update_window_title()

@@ -66,3 +66,27 @@ def test_multipart_polygon_renders_and_secondary_part_is_selectable():
     assert hit is item
 
     view.close()
+
+
+def test_custom_keypoint_schema_finishes_after_configured_point_count():
+    app = QApplication.instance() or QApplication([])
+    view = CanvasView()
+    view.resize(800, 600)
+    view.show()
+    view.load_image(QImage(640, 480, QImage.Format.Format_RGB32), [])
+    view.set_enabled_shapes({ShapeType.KEYPOINT})
+    view.set_mode(ShapeType.KEYPOINT)
+    view.set_keypoint_schema(["start", "end"])
+    app.processEvents()
+
+    view._enable_draw_mode()
+    for point in (QPointF(100, 100), QPointF(200, 200)):
+        QTest.mouseClick(
+            view.viewport(), Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier, view.mapFromScene(point),
+        )
+
+    assert len(view.annotations) == 1
+    assert [item.name for item in view.annotations[0].keypoints] == ["start", "end"]
+    assert not view.draw_enabled
+    view.close()
