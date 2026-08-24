@@ -107,6 +107,7 @@ class MainWindow(QMainWindow):
         self._save_generation = 0
         self._save_generation_in_flight = 0
         self._saved_annotation_labels: dict[str, Counter[str]] = {}
+        self._shortcut_chord: str | None = None
         self._pending_save_statistics: tuple[str, Counter[str], Counter[str]] | None = None
         self._restart_statistics_after_finish = False
         self._auto_save_timer = QTimer(self); self._auto_save_timer.setSingleShot(True); self._auto_save_timer.timeout.connect(self.save_current)
@@ -117,13 +118,45 @@ class MainWindow(QMainWindow):
             app.installEventFilter(self)
 
     def eventFilter(self, watched, event) -> bool:
-        if event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_W and not event.isAutoRepeat():
+        if event.type() == QEvent.Type.KeyPress and not event.isAutoRepeat():
             focus = QApplication.focusWidget()
+            if not isinstance(focus, (QLineEdit, QComboBox)):
+                modifiers = event.modifiers()
+                key = event.key()
+                chord_start = {
+                    Qt.Key.Key_L: "LG",
+                    Qt.Key.Key_A: "AS",
+                    Qt.Key.Key_I: "IF",
+                    Qt.Key.Key_C: "CA",
+                    Qt.Key.Key_D: "DS",
+                }.get(key) if modifiers & Qt.KeyboardModifier.ControlModifier else None
+                if chord_start:
+                    self._shortcut_chord = chord_start
+                    QTimer.singleShot(1200, self._clear_shortcut_chord)
+                    event.accept()
+                    return True
+                if self._shortcut_chord:
+                    action = {
+                        "LG": (Qt.Key.Key_G, self.open_label_groups),
+                        "AS": (Qt.Key.Key_S, self.open_settings),
+                        "IF": (Qt.Key.Key_F, self.open_image_filter),
+                        "CA": (Qt.Key.Key_A, self.open_crosshair),
+                        "DS": (Qt.Key.Key_S, self.open_statistics),
+                    }.get(self._shortcut_chord)
+                    self._clear_shortcut_chord()
+                    if action and key == action[0] and not modifiers:
+                        action[1]()
+                        event.accept()
+                        return True
             if focus is self.canvas or (focus is not None and self.canvas.isAncestorOf(focus)):
-                self._toggle_canvas_drawing()
-                event.accept()
-                return True
+                if event.key() == Qt.Key.Key_W:
+                    self._toggle_canvas_drawing()
+                    event.accept()
+                    return True
         return super().eventFilter(watched, event)
+
+    def _clear_shortcut_chord(self) -> None:
+        self._shortcut_chord = None
 
     def _format_display_name(self) -> str:
         return {
