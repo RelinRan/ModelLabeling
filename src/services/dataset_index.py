@@ -221,12 +221,13 @@ class DatasetIndexRepository:
     def position(self, path: Path) -> int:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT sort_key FROM images WHERE path=?", (str(Path(path).resolve()),)
+                "SELECT sort_key,id FROM images WHERE path=?", (str(Path(path).resolve()),)
             ).fetchone()
             if row is None:
                 return -1
             return int(connection.execute(
-                "SELECT COUNT(*) FROM images WHERE sort_key < ?", (row[0],)
+                "SELECT COUNT(*) FROM images WHERE sort_key < ? OR (sort_key = ? AND id < ?)",
+                (row[0], row[0], row[1]),
             ).fetchone()[0])
 
     def upsert_batch(self, batch: Iterable[IndexedImage]) -> None:
@@ -303,6 +304,7 @@ class DatasetIndexRepository:
 
     def scan_paths(self, cancel_callback=None, batch_size: int = 500, label_names: list[str] | None = None):
         coco_labels = self._load_coco_labels() if self.annotation_format == "coco" else {}
+        coco_json = self._coco_json_path() if self.annotation_format == "coco" else None
         cached = self._cached_annotation_rows()
         batch: list[IndexedImage] = []
         for root, _dirs, files in os.walk(self.image_dir):
@@ -318,6 +320,9 @@ class DatasetIndexRepository:
                     continue
                 relative = path.relative_to(self.image_dir)
                 annotation_path = self._annotation_path(path, relative)
+                if self.annotation_format == "coco":
+                    has_annotation, labels = self._coco_entry_for_image(path, relative, coco_labels)
+                    annotation_path = coco_json if has_annotation else None
                 annotation_size = annotation_mtime_ns = 0
                 if annotation_path is not None and annotation_path.exists():
                     try:
@@ -326,10 +331,11 @@ class DatasetIndexRepository:
                     except OSError:
                         pass
                 old = cached.get(str(path.resolve()))
-                if old and old[0] == stat.st_size and old[1] == stat.st_mtime_ns and old[2] == annotation_size and old[3] == annotation_mtime_ns:
-                    labels = old[4]
-                else:
-                    labels = self._read_annotation_labels(path, relative, label_names or [], coco_labels)
+                if self.annotation_format != "coco":
+                    if old and old[0] == stat.st_size and old[1] == stat.st_mtime_ns and old[2] == annotation_size and old[3] == annotation_mtime_ns:
+                        labels = old[4]
+                    else:
+                        labels = self._read_annotation_labels(path, relative, label_names or [], coco_labels)
                 batch.append(IndexedImage(
                     0, path, str(relative), path.name, stat.st_size, stat.st_mtime_ns,
                     annotation_path=annotation_path,
@@ -359,7 +365,7 @@ class DatasetIndexRepository:
 
     def _read_annotation_labels(self, image_path: Path, relative: Path, label_names: list[str], coco_labels: dict[str, set[str]]) -> set[str]:
         if self.annotation_format == "coco":
-            return coco_labels.get(image_path.name, set()) | coco_labels.get(relative.as_posix(), set())
+            return self._coco_entry_for_image(image_path, relative, coco_labels)[1]
         path = self._annotation_path(image_path, relative)
         if not path or not path.exists():
             return set()
@@ -388,16 +394,41 @@ class DatasetIndexRepository:
             for item in document.get("annotations", []):
                 name = categories.get(item.get("category_id"), "")
                 image_name = names.get(item.get("image_id"), "")
-                if name and image_name:
-                    result.setdefault(image_name, set()).add(name)
-                    result.setdefault(Path(image_name).name, set()).add(name)
+                if image_name:
+                    values = result.setdefault(image_name.replace("\\", "/"), set())
+                    if name:
+                        values.add(name)
         except (OSError, StopIteration, json.JSONDecodeError):
             pass
         return result
 
+    @staticmethod
+    def _coco_entry_for_image(
+        image_path: Path, relative: Path, labels: dict[str, set[str]],
+    ) -> tuple[bool, set[str]]:
+        relative_name = relative.as_posix()
+        if relative_name in labels:
+            return True, labels[relative_name]
+        basename_matches = [
+            (name, values) for name, values in labels.items()
+            if Path(name).name == image_path.name
+        ]
+        return (True, basename_matches[0][1]) if len(basename_matches) == 1 else (False, set())
+
+    def _coco_json_path(self) -> Path | None:
+        if self.annotation_dir.is_file() and self.annotation_dir.suffix.lower() == ".json":
+            return self.annotation_dir
+        if not self.annotation_dir.is_dir():
+            return None
+        for name in ("annotations.json", "instances.json"):
+            path = self.annotation_dir / name
+            if path.is_file():
+                return path
+        return next(iter(sorted(self.annotation_dir.glob("*.json"))), None)
+
     def _annotation_path(self, image_path: Path, relative: Path) -> Path | None:
         if self.annotation_format == "coco":
-            return self.annotation_dir
+            return self._coco_json_path()
         suffix = ".xml" if self.annotation_format == "voc" else ".txt"
         return self.annotation_dir / relative.with_suffix(suffix)
 
