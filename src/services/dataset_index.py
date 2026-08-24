@@ -266,6 +266,8 @@ class DatasetIndexRepository:
 
     def update_annotation(self, image_path: Path, annotation_path: Path | None, labels: Iterable[str]) -> None:
         """Synchronize one successful editor save with the persistent index."""
+        labels = tuple(str(label) for label in labels if str(label))
+        has_annotations = bool(labels)
         annotation_size = annotation_mtime_ns = 0
         if annotation_path is not None and annotation_path.exists():
             stat = annotation_path.stat()
@@ -279,14 +281,14 @@ class DatasetIndexRepository:
             image_id = int(row[0])
             connection.execute(
                 "UPDATE images SET annotation_path=?,annotation_status=?,annotation_size=?,annotation_mtime_ns=? WHERE id=?",
-                (str(annotation_path) if annotation_path else None,
-                 "present" if annotation_path is not None else "missing",
+                (str(annotation_path) if annotation_path and has_annotations else None,
+                 "present" if has_annotations else "missing",
                  annotation_size, annotation_mtime_ns, image_id),
             )
             connection.execute("DELETE FROM image_labels WHERE image_id=?", (image_id,))
             connection.executemany(
                 "INSERT OR IGNORE INTO image_labels(image_id,label) VALUES(?,?)",
-                [(image_id, str(label)) for label in labels if str(label)],
+                [(image_id, label) for label in labels],
             )
 
     def prune_missing(self, cancel_callback=None) -> None:
@@ -319,27 +321,31 @@ class DatasetIndexRepository:
                 except OSError:
                     continue
                 relative = path.relative_to(self.image_dir)
-                annotation_path = self._annotation_path(path, relative)
+                candidate_annotation_path = self._annotation_path(path, relative)
+                annotation_path = candidate_annotation_path
                 if self.annotation_format == "coco":
                     has_annotation, labels = self._coco_entry_for_image(path, relative, coco_labels)
                     annotation_path = coco_json if has_annotation else None
                 annotation_size = annotation_mtime_ns = 0
-                if annotation_path is not None and annotation_path.exists():
+                if candidate_annotation_path is not None and candidate_annotation_path.exists():
                     try:
-                        annotation_stat = annotation_path.stat()
+                        annotation_stat = candidate_annotation_path.stat()
                         annotation_size, annotation_mtime_ns = annotation_stat.st_size, annotation_stat.st_mtime_ns
                     except OSError:
                         pass
                 old = cached.get(str(path.resolve()))
                 if self.annotation_format != "coco":
                     if old and old[0] == stat.st_size and old[1] == stat.st_mtime_ns and old[2] == annotation_size and old[3] == annotation_mtime_ns:
-                        labels = old[4]
+                        labels, has_annotation = old[4], old[5] == "present"
                     else:
-                        labels = self._read_annotation_labels(path, relative, label_names or [], coco_labels)
+                        has_annotation, labels = self._read_annotation_info(
+                            path, relative, label_names or [], coco_labels,
+                        )
+                    annotation_path = candidate_annotation_path if has_annotation else None
                 batch.append(IndexedImage(
                     0, path, str(relative), path.name, stat.st_size, stat.st_mtime_ns,
                     annotation_path=annotation_path,
-                    annotation_status="present" if annotation_path and annotation_path.exists() else "missing",
+                    annotation_status="present" if annotation_path is not None else "missing",
                     annotation_labels=tuple(labels), annotation_size=annotation_size,
                     annotation_mtime_ns=annotation_mtime_ns,
                 ))
@@ -349,40 +355,55 @@ class DatasetIndexRepository:
         if batch:
             yield batch
 
-    def _cached_annotation_rows(self) -> dict[str, tuple[int, int, int, int, tuple[str, ...]]]:
+    def _cached_annotation_rows(self) -> dict[str, tuple[int, int, int, int, tuple[str, ...], str]]:
         """Read cached signatures and labels once for an incremental scan."""
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT id,path,file_size,mtime_ns,annotation_size,annotation_mtime_ns FROM images"
+                "SELECT id,path,file_size,mtime_ns,annotation_size,annotation_mtime_ns,annotation_status FROM images"
             ).fetchall()
             labels = {}
             for image_id, label in connection.execute("SELECT image_id,label FROM image_labels"):
                 labels.setdefault(int(image_id), []).append(str(label))
         return {
-            str(path): (int(file_size), int(mtime_ns), int(annotation_size), int(annotation_mtime_ns), tuple(labels.get(int(image_id), [])))
-            for image_id, path, file_size, mtime_ns, annotation_size, annotation_mtime_ns in rows
+            str(path): (
+                int(file_size), int(mtime_ns), int(annotation_size), int(annotation_mtime_ns),
+                tuple(labels.get(int(image_id), [])), str(annotation_status),
+            )
+            for image_id, path, file_size, mtime_ns, annotation_size, annotation_mtime_ns, annotation_status in rows
         }
 
     def _read_annotation_labels(self, image_path: Path, relative: Path, label_names: list[str], coco_labels: dict[str, set[str]]) -> set[str]:
+        return self._read_annotation_info(image_path, relative, label_names, coco_labels)[1]
+
+    def _read_annotation_info(
+        self, image_path: Path, relative: Path, label_names: list[str],
+        coco_labels: dict[str, set[str]],
+    ) -> tuple[bool, set[str]]:
         if self.annotation_format == "coco":
-            return self._coco_entry_for_image(image_path, relative, coco_labels)[1]
+            return self._coco_entry_for_image(image_path, relative, coco_labels)
         path = self._annotation_path(image_path, relative)
         if not path or not path.exists():
-            return set()
+            return False, set()
         try:
             if self.annotation_format == "voc":
                 root = ET.parse(path).getroot()
-                return {name.strip() for name in (node.findtext("name", "") for node in root.findall("object")) if name.strip()}
+                objects = root.findall("object")
+                return bool(objects), {
+                    name.strip() for name in (node.findtext("name", "") for node in objects)
+                    if name.strip()
+                }
             labels = set()
+            has_annotation = False
             for line in path.read_text(encoding="utf-8").splitlines():
                 parts = line.split()
                 if parts and parts[0].isdigit():
+                    has_annotation = True
                     index = int(parts[0])
                     if 0 <= index < len(label_names):
                         labels.add(label_names[index])
-            return labels
+            return has_annotation, labels
         except (OSError, ValueError, ET.ParseError):
-            return set()
+            return False, set()
 
     def _load_coco_labels(self) -> dict[str, set[str]]:
         result: dict[str, set[str]] = {}

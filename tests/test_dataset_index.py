@@ -59,3 +59,39 @@ def test_coco_status_and_labels_use_relative_path_without_basename_merging(tmp_p
     assert repository.count(status="labeled") == 3
     assert repository.count(status="unlabeled") == 0
     assert [item.relative_path.replace("\\", "/") for item in repository.get_page(0, 10, label="vehicle")] == ["val/same.jpg"]
+
+
+def test_empty_annotation_files_are_unlabeled_and_save_updates_immediately(tmp_path):
+    image_dir = tmp_path / "images"
+    label_dir = tmp_path / "labels"
+    image = image_dir / "sample.jpg"
+    label = label_dir / "sample.txt"
+    _image(image)
+    label_dir.mkdir()
+    label.write_text("", encoding="utf-8")
+    repository = DatasetIndexRepository(tmp_path, image_dir, label_dir, "yolo")
+    records = [item for batch in repository.scan_paths(batch_size=10, label_names=["person"]) for item in batch]
+    repository.upsert_batch(records)
+
+    assert records[0].annotation_status == "missing"
+    repository.update_annotation(image, label, ["person"])
+    assert repository.count(status="labeled") == 1
+    repository.update_annotation(image, label, [])
+    assert repository.count(status="labeled") == 0
+    assert repository.count(status="unlabeled") == 1
+
+
+def test_empty_voc_document_is_unlabeled(tmp_path):
+    image_dir = tmp_path / "images"
+    annotation_dir = tmp_path / "Annotations"
+    image = image_dir / "sample.jpg"
+    _image(image)
+    annotation_dir.mkdir()
+    (annotation_dir / "sample.xml").write_text(
+        "<annotation><filename>sample.jpg</filename></annotation>", encoding="utf-8",
+    )
+    repository = DatasetIndexRepository(tmp_path, image_dir, annotation_dir, "voc")
+
+    records = [item for batch in repository.scan_paths(batch_size=10) for item in batch]
+
+    assert records[0].annotation_status == "missing"
