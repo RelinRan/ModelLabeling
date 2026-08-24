@@ -277,3 +277,31 @@ def test_yolo_segmentation_rejects_multipart_polygon():
 
     with pytest.raises(UnsupportedAnnotationError, match="multipart"):
         validate_annotations([annotation], "yolo", "yolo_segmentation")
+
+
+def test_coco_rle_mask_is_not_silently_loaded_as_rectangle(tmp_path):
+    image = tmp_path / "images" / "sample.jpg"
+    annotations_dir = tmp_path / "annotations"
+    image.parent.mkdir()
+    annotations_dir.mkdir()
+    _sample_image(image)
+    document = {
+        "images": [{"id": 1, "file_name": "sample.jpg", "width": 640, "height": 480}],
+        "categories": [{"id": 1, "name": "person"}],
+        "annotations": [{
+            "id": 1,
+            "image_id": 1,
+            "category_id": 1,
+            "bbox": [30, 30, 70, 70],
+            "segmentation": {"size": [480, 640], "counts": "compressed-rle"},
+            "area": 4900,
+            "iscrowd": 1,
+        }],
+    }
+    (annotations_dir / "annotations.json").write_text(json.dumps(document), encoding="utf-8")
+    settings = _settings(tmp_path, "coco", "coco", [LabelPreset("person", 0, "#00e5ff")])
+
+    result = AnnotationService().load(image, annotations_dir, settings)
+
+    assert not result.annotations
+    assert result.error and "RLE mask" in result.error

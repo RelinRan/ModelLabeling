@@ -230,6 +230,10 @@ class AnnotationService:
                 annotations.append(Annotation(ShapeType.KEYPOINT, category_name, bbox_points, color=color, keypoints=parsed_keypoints, schema_name="COCO Keypoints"))
                 continue
             segmentation = item.get("segmentation")
+            if isinstance(segmentation, dict) and segmentation.get("counts") is not None:
+                raise ValueError(
+                    "COCO RLE mask annotations are not supported; convert masks to polygon segmentation first"
+                )
             if isinstance(segmentation, list) and segmentation and isinstance(segmentation[0], list):
                 parts = [
                     [QPointF(float(values[index]), float(values[index + 1])) for index in range(0, len(values) - 1, 2)]
