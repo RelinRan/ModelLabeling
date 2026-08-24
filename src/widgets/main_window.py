@@ -89,7 +89,11 @@ class SingleImageAnnotationWorker(QObject):
 
     def __init__(self, record: ImageRecord, image_dir: Path, annotation_dir: Path, settings: ProjectSettings) -> None:
         super().__init__()
-        self.record, self.image_dir, self.annotation_dir, self.settings = record, image_dir, annotation_dir, settings
+        self.record = ImageRecord(path=record.path, width=record.width, height=record.height,
+                                  file_format=record.file_format, file_size=record.file_size,
+                                  status=record.status, metadata_loaded=record.metadata_loaded)
+        self.image_dir, self.annotation_dir = Path(image_dir), Path(annotation_dir)
+        self.settings = ProjectSettings.from_dict(settings.to_dict())
 
     def run(self) -> None:
         try:
@@ -128,8 +132,13 @@ class DatasetStatisticsWorker(QObject):
 
     def __init__(self, records: list[ImageRecord] | None, image_dir: Path, annotation_dir: Path, settings: ProjectSettings, presets: list[LabelPreset]) -> None:
         super().__init__()
-        self.records, self.image_dir, self.annotation_dir, self.settings = records, image_dir, annotation_dir, settings
-        self.settings.label_presets = list(presets or settings.label_presets)
+        self.records = [ImageRecord(path=record.path, width=record.width, height=record.height,
+                                    file_format=record.file_format, file_size=record.file_size,
+                                    status=record.status, metadata_loaded=record.metadata_loaded)
+                        for record in records] if records is not None else None
+        self.image_dir, self.annotation_dir = Path(image_dir), Path(annotation_dir)
+        self.settings = ProjectSettings.from_dict(settings.to_dict())
+        self.settings.label_presets = list(presets or self.settings.label_presets)
         self._class_names = {preset.class_id: preset.name for preset in self.settings.label_presets}
         self.cancelled = False
 
@@ -530,11 +539,18 @@ class DatasetScanWorker(QObject):
 class AutoLabelWorker(QObject):
     progress = Signal(int, int)
     modelReady = Signal(str, object)
+    annotationReady = Signal(str, object)
     finished = Signal()
     failed = Signal(str)
 
     def __init__(self, records, settings: ProjectSettings) -> None:
-        super().__init__(); self.records, self.settings, self.cancelled = records, settings, False
+        super().__init__()
+        self.records = [ImageRecord(path=record.path, width=record.width, height=record.height,
+                                    file_format=record.file_format, file_size=record.file_size,
+                                    status=record.status, metadata_loaded=record.metadata_loaded)
+                        for record in records]
+        self.settings = ProjectSettings.from_dict(settings.to_dict())
+        self.cancelled = False
 
     def run(self) -> None:
         try:
@@ -553,8 +569,7 @@ class AutoLabelWorker(QObject):
                     break
                 from PIL import Image
                 with Image.open(record.path) as image:
-                    record.annotations = detector.predict(image, self.settings.label_presets, size, self.settings.confidence_threshold, self.settings.nms_threshold)
-                record.status = "labeled" if record.annotations else "unlabeled"
+                    annotations = detector.predict(image, self.settings.label_presets, size, self.settings.confidence_threshold, self.settings.nms_threshold)
                 if self.settings.auto_save and self.settings.annotation_dir is not None:
                     target_dir = self.settings.annotation_dir
                     if self.settings.annotation_format != "coco" and self.settings.image_dir is not None:
@@ -562,9 +577,10 @@ class AutoLabelWorker(QObject):
                             target_dir /= record.path.parent.relative_to(self.settings.image_dir)
                         except ValueError:
                             pass
-                    saved = annotation_service.save(record.path, record.annotations, target_dir, self.settings)
+                    saved = annotation_service.save(record.path, annotations, target_dir, self.settings)
                     if not saved.ok:
                         raise OSError(saved.error or f"保存自动标注失败: {record.path.name}")
+                self.annotationReady.emit(str(record.path), annotations)
                 self.progress.emit(current, total)
             self.finished.emit()
         except Exception as exc:
@@ -590,8 +606,9 @@ class DatasetAnnotationSaveWorker(QObject):
 
     def __init__(self, image_path: Path, image_dir: Path, annotation_dir: Path, annotations: list[Annotation], settings: ProjectSettings) -> None:
         super().__init__()
-        self.image_path, self.image_dir, self.annotation_dir = image_path, image_dir, annotation_dir
-        self.annotations, self.settings = annotations, settings
+        self.image_path, self.image_dir, self.annotation_dir = Path(image_path), Path(image_dir), Path(annotation_dir)
+        self.annotations = [Annotation.from_dict(annotation.to_dict()) for annotation in annotations]
+        self.settings = ProjectSettings.from_dict(settings.to_dict())
 
     def run(self) -> None:
         try:
@@ -1845,10 +1862,25 @@ class MainWindow(QMainWindow):
         self._auto_cancel_requested = False; self._auto_thread = QThread(self); self._auto_worker = AutoLabelWorker(self.state.images, ProjectSettings.from_dict(self.settings.to_dict())); self.auto_task_id = self.task_manager.start("自动标注", self.cancel_auto_label, len(self.state.images)); self._auto_worker.moveToThread(self._auto_thread); self._auto_thread.started.connect(self._auto_worker.run); self._auto_worker.modelReady.connect(self._auto_model_ready); self._auto_worker.progress.connect(self._auto_progress); self._auto_worker.finished.connect(self._auto_finished); self._auto_worker.failed.connect(self._auto_failed); self._auto_worker.finished.connect(self._auto_thread.quit); self._auto_worker.failed.connect(self._auto_thread.quit); self._auto_thread.finished.connect(self._auto_thread_finished); self._set_status_progress("自动标注", 0, len(self.state.images)); self._auto_thread.start()
 
     def _auto_model_ready(self, task: str, keypoint_names: list[str]) -> None:
+        if self._auto_worker is not None:
+            try:
+                self._auto_worker.annotationReady.connect(self._auto_annotation_ready, Qt.ConnectionType.UniqueConnection)
+            except (TypeError, RuntimeError):
+                pass
         if task == "pose":
             self.settings.dataset_task = "yolo_pose"
             self.canvas.set_keypoint_schema(keypoint_names)
             self._apply_annotation_capabilities()
+
+    def _auto_annotation_ready(self, path: str, annotations: list[Annotation]) -> None:
+        """Commit worker output on the GUI thread instead of mutating records in a worker."""
+        record = next((item for item in self.state.images if str(item.path) == path), None)
+        if record is None:
+            return
+        record.annotations = [Annotation.from_dict(item.to_dict()) for item in annotations]
+        record.status = "labeled" if record.annotations else "unlabeled"
+        record.metadata_loaded = True
+        self.image_panel.update_record(record)
 
     def _auto_progress(self, current: int, total: int) -> None:
         percent = int(current / total * 100) if total else 0
