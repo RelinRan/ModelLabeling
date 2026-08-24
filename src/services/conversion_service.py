@@ -74,6 +74,21 @@ class ConversionService:
         else:
             output_image_dir = options.output_path
             output_annotation_dir = options.output_path
+        if options.overwrite:
+            # A COCO document is shared by every image. Remove stale or
+            # interrupted output before the first image is written.
+            if output_format == "coco":
+                for path in (output_annotation_dir / "annotations.json", output_annotation_dir / "instances.json"):
+                    path.unlink(missing_ok=True)
+                if output_image_dir.exists():
+                    for path in output_image_dir.iterdir():
+                        if path.is_file() and path.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".webp"}:
+                            path.unlink(missing_ok=True)
+            elif output_format in {"voc", "yolo"}:
+                suffixes = {"voc": {".xml"}, "yolo": {".txt"}}[output_format]
+                for path in output_annotation_dir.iterdir() if output_annotation_dir.exists() else ():
+                    if path.is_file() and path.suffix.lower() in suffixes:
+                        path.unlink(missing_ok=True)
         output_image_dir.mkdir(parents=True, exist_ok=True)
         output_annotation_dir.mkdir(parents=True, exist_ok=True)
         if output_format == "yolo":

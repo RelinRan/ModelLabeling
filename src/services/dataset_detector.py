@@ -27,6 +27,21 @@ class DatasetDetector:
 
         result = cls._detect_voc(root) or cls._detect_coco(root) or cls._detect_yolo(root)
         if result is None:
+            # Permit a test/project container directory that contains one
+            # actual dataset directory, e.g. test/voc-action-test. Do not
+            # guess when multiple child datasets exist.
+            candidates: list[DetectedDataset] = []
+            for child in sorted(root.iterdir(), key=lambda item: item.name.casefold()):
+                if not child.is_dir():
+                    continue
+                try:
+                    candidates.append(cls.detect(child))
+                except ValueError:
+                    continue
+            if len(candidates) == 1:
+                return candidates[0]
+            if len(candidates) > 1:
+                raise ValueError(f"multiple datasets found under: {root}")
             raise ValueError(f"unsupported dataset format: {root}")
         return result
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -275,7 +277,14 @@ class AnnotationService:
             document["annotations"].append(item)
             next_annotation_id += 1
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8")
+        # Replace atomically so an interrupted conversion cannot leave a
+        # truncated or concatenated COCO document for the next image.
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, prefix=f".{path.stem}-", suffix=".tmp", delete=False
+        ) as temporary:
+            temporary.write(json.dumps(document, ensure_ascii=False, indent=2))
+            temporary_path = Path(temporary.name)
+        os.replace(temporary_path, path)
 
     @staticmethod
     def _polygon_area(points: list[QPointF]) -> float:
