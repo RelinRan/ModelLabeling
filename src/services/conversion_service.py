@@ -13,6 +13,7 @@ from src.models.project import ProjectSettings
 from .annotation_service import AnnotationService
 from .dataset_detector import DatasetDetector
 from src.models.keypoint import COCO_PERSON_KEYPOINTS
+from .yolo_metadata import yolo_class_names
 
 
 @dataclass
@@ -229,10 +230,18 @@ class ConversionService:
                 names.update((node.findtext("name") or "").strip() for node in root.findall("object"))
         elif format_name.lower() == "yolo":
             classes_path = (source_root or annotation_dir) / "classes.txt"
+            class_names: list[str] = []
             if classes_path.exists():
                 class_names = [line.strip() for line in classes_path.read_text(encoding="utf-8").splitlines()]
+            if not class_names:
+                class_names = yolo_class_names(source_root or annotation_dir)
+            if class_names:
+                source_ids = set(range(len(class_names)))
+                result = [preset for preset in result if preset.class_id not in source_ids]
+                by_name = {preset.name for preset in result}
+                by_id = {preset.class_id for preset in result}
                 for class_id, name in enumerate(class_names):
-                    if name and class_id not in by_id:
+                    if name:
                         result.append(LabelPreset(name, class_id, QColor.fromHsv((class_id * 47) % 360, 210, 245).name()))
                         by_name.add(name); by_id.add(class_id)
             ids: set[int] = set()

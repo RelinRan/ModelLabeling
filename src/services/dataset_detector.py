@@ -4,6 +4,8 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from .yolo_metadata import load_yolo_metadata
+
 
 @dataclass(frozen=True)
 class DetectedDataset:
@@ -99,18 +101,17 @@ class DatasetDetector:
 
     @staticmethod
     def _yolo_task(root: Path, label_files: list[Path]) -> str:
-        for yaml_path in (root / "data.yaml", root / "data.yml"):
-            if yaml_path.is_file():
-                content = yaml_path.read_text(encoding="utf-8", errors="ignore").lower()
-                if "kpt_shape" in content or "task: pose" in content:
-                    return "yolo_pose"
+        metadata = load_yolo_metadata(root)
+        task = str(metadata.get("task", "")).strip().lower()
+        if metadata.get("kpt_shape") is not None or task == "pose":
+            return "yolo_pose"
+        if task in {"segment", "segmentation"}:
+            return "yolo_segmentation"
         for path in label_files[:20]:
             try:
                 lengths = [len(line.split()) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
             except OSError:
                 continue
-            if any(length >= 8 and (length - 5) % 3 == 0 for length in lengths):
-                return "yolo_pose"
             if any(length >= 7 and length % 2 == 1 for length in lengths):
                 return "yolo_segmentation"
         return "yolo_detection"

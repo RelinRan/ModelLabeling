@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,6 +17,7 @@ from src.models.project import ProjectSettings
 from src.utils.geometry import rect_from_points, rect_to_yolo, yolo_to_rect
 from .coco_store import CocoAnnotationStore
 from .format_adapters import adapter_for
+from .yolo_metadata import yolo_keypoint_names, yolo_keypoint_shape
 
 
 @dataclass
@@ -512,13 +512,19 @@ class AnnotationService:
             if any(value < 0.0 or value > 1.0 for value in bbox_values):
                 raise ValueError(f"{txt_path.name}:{line_number}: normalized bbox out of range")
             rect = yolo_to_rect(tuple(bbox_values), width, height)
+            keypoint_names = yolo_keypoint_names(directory, class_id)
+            if keypoint_names and len(keypoint_names) != row_keypoints:
+                raise ValueError(
+                    f"{txt_path.name}:{line_number}: kpt_names has {len(keypoint_names)} names, "
+                    f"but row has {row_keypoints} keypoints"
+                )
             keypoints = []
             for index in range(4, len(values), 3):
                 x, y, visibility = values[index:index + 3]
                 if not 0.0 <= x <= 1.0 or not 0.0 <= y <= 1.0:
                     raise ValueError(f"{txt_path.name}:{line_number}: normalized keypoint out of range")
                 keypoints.append(Keypoint(
-                    f"keypoint_{len(keypoints)}",
+                    keypoint_names[len(keypoints)] if keypoint_names else f"keypoint_{len(keypoints)}",
                     QPointF(x * width, y * height),
                     int(round(visibility)),
                 ))
@@ -532,20 +538,13 @@ class AnnotationService:
 
     @staticmethod
     def _yolo_pose_keypoint_count(directory: Path) -> int | None:
-        candidates = []
-        current = Path(directory)
-        parents = list(current.parents)[:3]
-        for parent in (current, *parents):
-            candidates.extend((parent / "data.yaml", parent / "data.yml"))
-        for path in candidates:
-            if not path.is_file():
-                continue
-            match = re.search(r"(?m)^\s*kpt_shape\s*:\s*\[\s*(\d+)\s*,\s*([23])\s*\]", path.read_text(encoding="utf-8", errors="ignore"))
-            if match:
-                if int(match.group(2)) != 3:
-                    raise ValueError("YOLO Pose kpt_shape must use [count, 3]")
-                return int(match.group(1))
-        return None
+        shape = yolo_keypoint_shape(directory)
+        if shape is None:
+            return None
+        count, dimensions = shape
+        if dimensions != 3:
+            raise ValueError("YOLO Pose kpt_shape must use [count, 3]")
+        return count
 
     def _load_yolo_segmentation(self, image_path: Path, directory: Path, presets: list[LabelPreset], image_size: tuple[int, int] | None = None, index: DatasetAnnotationIndex | None = None) -> list[Annotation]:
         txt_path = directory / f"{image_path.stem}.txt"

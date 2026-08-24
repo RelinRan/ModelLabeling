@@ -138,7 +138,10 @@ def test_yolo_pose_load_accepts_matching_data_yaml_shape(tmp_path):
     labels = tmp_path / "labels"
     image.parent.mkdir(); labels.mkdir()
     _sample_image(image)
-    (tmp_path / "data.yaml").write_text("kpt_shape: [2, 3]\n", encoding="utf-8")
+    (tmp_path / "data.yaml").write_text(
+        "kpt_shape: [2, 3]\nkpt_names:\n  0: [nose, eye]\n",
+        encoding="utf-8",
+    )
     (labels / "sample.txt").write_text(
         "0 0.5 0.5 0.5 0.5 0.4 0.4 2 0.6 0.6 2\n", encoding="utf-8"
     )
@@ -147,6 +150,7 @@ def test_yolo_pose_load_accepts_matching_data_yaml_shape(tmp_path):
     assert not result.error
     assert len(result.annotations) == 1
     assert len(result.annotations[0].keypoints) == 2
+    assert [item.name for item in result.annotations[0].keypoints] == ["nose", "eye"]
 
 
 def test_coco_keypoints_convert_to_official_yolo_pose(tmp_path):

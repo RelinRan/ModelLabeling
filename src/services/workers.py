@@ -17,6 +17,7 @@ from .onnx_service import YoloOnnxDetector
 from .project_service import ProjectService
 from .dataset_index import DatasetIndexRepository, IndexedImage
 from .dataset_session import DatasetScanResult
+from .yolo_metadata import yolo_class_names
 
 
 class DatasetStatisticsWorker(QObject):
@@ -139,6 +140,8 @@ class DatasetScanWorker(QObject):
             for path in (root / "classes.txt", root.parent / "classes.txt"):
                 if path.exists():
                     names = [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]; break
+            if not names:
+                names = [name for name in yolo_class_names(root) if name]
         elif self.settings.annotation_format == "voc":
             for index, path in enumerate(self.annotation_dir.rglob("*.xml")):
                 if sample_limit is not None and index >= sample_limit: break
