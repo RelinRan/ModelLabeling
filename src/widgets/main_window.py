@@ -44,6 +44,7 @@ from .stats_dialog import StatsDialog
 from .task_list_dialog import TaskListDialog
 from .task_manager import TaskManager
 from .theme import idea_stylesheet
+from .support_dialogs import FileInfoDialog, FileTextDialog, ModelStatusBar
 
 
 DEFAULT_LABEL_NAMES = (
@@ -634,7 +635,7 @@ class DatasetAnnotationSaveWorker(QObject):
             self.finished.emit(str(exc))
 
 
-class ModelStatusBar(QStatusBar):
+class _LegacyModelStatusBar(QStatusBar):
     def set_content_layout(self, layout):
         self._content_layout = layout
         self._content_host = QWidget(self)
@@ -644,7 +645,7 @@ class ModelStatusBar(QStatusBar):
     def layout(self): return getattr(self, "_content_layout", super().layout())
 
 
-class FileTextDialog(QDialog):
+class _LegacyFileTextDialog(QDialog):
     def __init__(self, title: str, content: str, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle(title)
@@ -688,7 +689,7 @@ class FileTextDialog(QDialog):
             field.selectAll()
 
 
-class FileInfoDialog(QDialog):
+class _LegacyFileInfoDialog(QDialog):
     def __init__(self, title: str, rows: list[tuple[str, str]], parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle(title)
