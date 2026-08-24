@@ -16,6 +16,7 @@ from src.services.format_capabilities import task_for_format, validate_annotatio
 from src.models.project import ProjectSettings
 from src.utils.geometry import rect_from_points, rect_to_yolo, yolo_to_rect
 from .coco_store import CocoAnnotationStore
+from .format_adapters import adapter_for
 
 
 @dataclass
@@ -92,16 +93,9 @@ class AnnotationService:
         image_size: tuple[int, int] | None = None,
     ) -> LoadResult:
         try:
-            if settings.annotation_format == "voc":
-                return LoadResult(self._load_voc(image_path, annotation_dir, settings.label_presets, index))
-            if settings.annotation_format == "coco":
-                return LoadResult(self._load_coco(image_path, annotation_dir, settings.label_presets, index))
-            task = task_for_format(settings.annotation_format, settings.dataset_task).value
-            if task == "yolo_pose":
-                return LoadResult(self._load_yolo_pose(image_path, annotation_dir, settings.label_presets, image_size, index))
-            if task == "yolo_segmentation":
-                return LoadResult(self._load_yolo_segmentation(image_path, annotation_dir, settings.label_presets, image_size, index))
-            return LoadResult(self._load_yolo(image_path, annotation_dir, settings.label_presets, image_size, index))
+            return adapter_for(settings.annotation_format, settings.dataset_task).load(
+                self, image_path, annotation_dir, settings, index, image_size
+            )
         except (OSError, ValueError, ET.ParseError, KeyError) as exc:
             return LoadResult(error=str(exc))
 
@@ -113,19 +107,10 @@ class AnnotationService:
         settings: ProjectSettings,
     ) -> SaveResult:
         try:
+            adapter = adapter_for(settings.annotation_format, settings.dataset_task)
             validate_annotations(annotations, settings.annotation_format, settings.dataset_task)
             annotation_dir.mkdir(parents=True, exist_ok=True)
-            if settings.annotation_format == "voc":
-                self._save_voc(image_path, annotations, annotation_dir, settings.label_presets)
-            elif settings.annotation_format == "coco":
-                self._save_coco(image_path, annotations, annotation_dir, settings.label_presets)
-            elif task_for_format(settings.annotation_format, settings.dataset_task).value == "yolo_pose":
-                self._save_yolo_pose(image_path, annotations, annotation_dir, settings.label_presets, settings)
-            elif task_for_format(settings.annotation_format, settings.dataset_task).value == "yolo_segmentation":
-                self._save_yolo_segmentation(image_path, annotations, annotation_dir, settings.label_presets)
-            else:
-                self._save_yolo(image_path, annotations, annotation_dir, settings.label_presets)
-            return SaveResult(True)
+            return adapter.save(self, image_path, annotations, annotation_dir, settings)
         except (OSError, ValueError, KeyError) as exc:
             return SaveResult(False, str(exc))
 
@@ -151,6 +136,31 @@ class AnnotationService:
         by_name = {preset.name: preset.class_id for preset in presets}
         by_id = {preset.class_id: preset for preset in presets}
         return by_name, by_id
+
+    def _load_by_adapter(self, image_path: Path, directory: Path, settings: ProjectSettings, adapter, index=None, image_size=None) -> LoadResult:
+        if adapter.format_name == "voc":
+            return LoadResult(self._load_voc(image_path, directory, settings.label_presets, index))
+        if adapter.format_name == "coco":
+            return LoadResult(self._load_coco(image_path, directory, settings.label_presets, index))
+        task = adapter.task.value
+        if task == "yolo_pose":
+            return LoadResult(self._load_yolo_pose(image_path, directory, settings.label_presets, image_size, index))
+        if task == "yolo_segmentation":
+            return LoadResult(self._load_yolo_segmentation(image_path, directory, settings.label_presets, image_size, index))
+        return LoadResult(self._load_yolo(image_path, directory, settings.label_presets, image_size, index))
+
+    def _save_by_adapter(self, image_path: Path, annotations: list[Annotation], directory: Path, settings: ProjectSettings, adapter) -> SaveResult:
+        if adapter.format_name == "voc":
+            self._save_voc(image_path, annotations, directory, settings.label_presets)
+        elif adapter.format_name == "coco":
+            self._save_coco(image_path, annotations, directory, settings.label_presets)
+        elif adapter.task.value == "yolo_pose":
+            self._save_yolo_pose(image_path, annotations, directory, settings.label_presets, settings)
+        elif adapter.task.value == "yolo_segmentation":
+            self._save_yolo_segmentation(image_path, annotations, directory, settings.label_presets)
+        else:
+            self._save_yolo(image_path, annotations, directory, settings.label_presets)
+        return SaveResult(True)
 
     @staticmethod
     def _coco_json_path(directory: Path) -> Path | None:

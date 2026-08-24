@@ -156,7 +156,7 @@ class DatasetStatisticsWorker(QObject):
                 # this lets statistics advance one file at a time.
                 records = []
                 total_indexed = repository.count()
-                for offset in range(0, total_indexed, 500):
+                for page in repository.iter_pages(500):
                     if self.cancelled:
                         return
                     records.extend(
@@ -170,7 +170,7 @@ class DatasetStatisticsWorker(QObject):
                             status="pending",
                             metadata_loaded=False,
                         )
-                        for item in repository.get_page(offset, 500)
+                        for item in page
                     )
             total = len(records)
             self.progress.emit(0, total, self._snapshot(total, 0, 0, Counter()))

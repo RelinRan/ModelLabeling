@@ -182,6 +182,33 @@ class DatasetIndexRepository:
             )
             return [self._row_to_image(row) for row in rows]
 
+    def get_page_after(self, sort_key: str | None, limit: int, query: str = "", status: str = "all", label: str = "", after_id: int = 0) -> list[IndexedImage]:
+        """Keyset pagination that stays fast on very large datasets."""
+        where, parameters = self._filter_clause(query, status, label)
+        if sort_key is not None:
+            condition = "(sort_key > ? OR (sort_key = ? AND id > ?))"
+            where = f"{where} AND {condition}" if where else f" WHERE {condition}"
+            parameters.extend((sort_key, sort_key, int(after_id)))
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT id,path,relative_path,file_name,file_size,mtime_ns,width,height,annotation_path,annotation_status "
+                f"FROM images{where} ORDER BY sort_key,id LIMIT ?",
+                [*parameters, int(limit)],
+            )
+            return [self._row_to_image(row) for row in rows]
+
+    def iter_pages(self, page_size: int = 500, query: str = "", status: str = "all", label: str = ""):
+        """Yield indexed images without OFFSET degradation."""
+        last_key: str | None = None
+        last_id = 0
+        while True:
+            page = self.get_page_after(last_key, page_size, query, status, label, last_id)
+            if not page:
+                return
+            yield page
+            last_key = page[-1].file_name.casefold()
+            last_id = page[-1].id
+
     def position(self, path: Path) -> int:
         with self._connect() as connection:
             row = connection.execute(
