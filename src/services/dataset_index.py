@@ -26,6 +26,8 @@ class IndexedImage:
     annotation_path: Path | None = None
     annotation_status: str = "unknown"
     annotation_labels: tuple[str, ...] = ()
+    annotation_size: int = 0
+    annotation_mtime_ns: int = 0
 
 
 class DatasetIndexRepository:
@@ -71,6 +73,8 @@ class DatasetIndexRepository:
                     width INTEGER NOT NULL DEFAULT 0,
                     height INTEGER NOT NULL DEFAULT 0,
                     annotation_path TEXT,
+                    annotation_size INTEGER NOT NULL DEFAULT 0,
+                    annotation_mtime_ns INTEGER NOT NULL DEFAULT 0,
                     annotation_status TEXT NOT NULL DEFAULT 'unknown',
                     sort_key TEXT NOT NULL
                 );
@@ -86,6 +90,11 @@ class DatasetIndexRepository:
                 CREATE INDEX IF NOT EXISTS idx_image_labels_label ON image_labels(label);
                 """
             )
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(images)")}
+            if "annotation_size" not in columns:
+                connection.execute("ALTER TABLE images ADD COLUMN annotation_size INTEGER NOT NULL DEFAULT 0")
+            if "annotation_mtime_ns" not in columns:
+                connection.execute("ALTER TABLE images ADD COLUMN annotation_mtime_ns INTEGER NOT NULL DEFAULT 0")
             connection.execute(
                 "INSERT INTO dataset_meta(key, value) VALUES('format', ?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -176,7 +185,7 @@ class DatasetIndexRepository:
         where, parameters = self._filter_clause(query, status, label)
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT id,path,relative_path,file_name,file_size,mtime_ns,width,height,annotation_path,annotation_status "
+                "SELECT id,path,relative_path,file_name,file_size,mtime_ns,width,height,annotation_path,annotation_status,annotation_size,annotation_mtime_ns "
                 f"FROM images{where} ORDER BY sort_key,id LIMIT ? OFFSET ?",
                 [*parameters, int(limit), int(offset)],
             )
@@ -191,7 +200,7 @@ class DatasetIndexRepository:
             parameters.extend((sort_key, sort_key, int(after_id)))
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT id,path,relative_path,file_name,file_size,mtime_ns,width,height,annotation_path,annotation_status "
+                "SELECT id,path,relative_path,file_name,file_size,mtime_ns,width,height,annotation_path,annotation_status,annotation_size,annotation_mtime_ns "
                 f"FROM images{where} ORDER BY sort_key,id LIMIT ?",
                 [*parameters, int(limit)],
             )
@@ -225,17 +234,18 @@ class DatasetIndexRepository:
         values = [
             (item.id or None, str(item.path), item.relative_path, item.file_name, item.file_size,
              item.mtime_ns, item.width, item.height, str(item.annotation_path) if item.annotation_path else None,
-            item.annotation_status, item.file_name.casefold())
+            item.annotation_status, item.file_name.casefold(), item.annotation_size, item.annotation_mtime_ns)
             for item in batch
         ]
         if not values:
             return
         with self._connect() as connection:
             connection.executemany(
-                "INSERT INTO images(id,path,relative_path,file_name,file_size,mtime_ns,width,height,annotation_path,annotation_status,sort_key) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET "
+                "INSERT INTO images(id,path,relative_path,file_name,file_size,mtime_ns,width,height,annotation_path,annotation_status,sort_key,annotation_size,annotation_mtime_ns) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET "
                 "relative_path=excluded.relative_path,file_name=excluded.file_name,file_size=excluded.file_size,mtime_ns=excluded.mtime_ns,"
-                "annotation_path=excluded.annotation_path,annotation_status=excluded.annotation_status",
+                "annotation_path=excluded.annotation_path,annotation_status=excluded.annotation_status,"
+                "annotation_size=excluded.annotation_size,annotation_mtime_ns=excluded.annotation_mtime_ns",
                 values,
             )
             for item in batch:
@@ -268,6 +278,7 @@ class DatasetIndexRepository:
 
     def scan_paths(self, cancel_callback=None, batch_size: int = 500, label_names: list[str] | None = None):
         coco_labels = self._load_coco_labels() if self.annotation_format == "coco" else {}
+        cached = self._cached_annotation_rows()
         batch: list[IndexedImage] = []
         for root, _dirs, files in os.walk(self.image_dir):
             for name in files:
@@ -282,18 +293,44 @@ class DatasetIndexRepository:
                     continue
                 relative = path.relative_to(self.image_dir)
                 annotation_path = self._annotation_path(path, relative)
-                labels = self._read_annotation_labels(path, relative, label_names or [], coco_labels)
+                annotation_size = annotation_mtime_ns = 0
+                if annotation_path is not None and annotation_path.exists():
+                    try:
+                        annotation_stat = annotation_path.stat()
+                        annotation_size, annotation_mtime_ns = annotation_stat.st_size, annotation_stat.st_mtime_ns
+                    except OSError:
+                        pass
+                old = cached.get(str(path.resolve()))
+                if old and old[0] == stat.st_size and old[1] == stat.st_mtime_ns and old[2] == annotation_size and old[3] == annotation_mtime_ns:
+                    labels = old[4]
+                else:
+                    labels = self._read_annotation_labels(path, relative, label_names or [], coco_labels)
                 batch.append(IndexedImage(
                     0, path, str(relative), path.name, stat.st_size, stat.st_mtime_ns,
                     annotation_path=annotation_path,
                     annotation_status="present" if annotation_path and annotation_path.exists() else "missing",
-                    annotation_labels=tuple(labels),
+                    annotation_labels=tuple(labels), annotation_size=annotation_size,
+                    annotation_mtime_ns=annotation_mtime_ns,
                 ))
                 if len(batch) >= batch_size:
                     yield batch
                     batch = []
         if batch:
             yield batch
+
+    def _cached_annotation_rows(self) -> dict[str, tuple[int, int, int, int, tuple[str, ...]]]:
+        """Read cached signatures and labels once for an incremental scan."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT id,path,file_size,mtime_ns,annotation_size,annotation_mtime_ns FROM images"
+            ).fetchall()
+            labels = {}
+            for image_id, label in connection.execute("SELECT image_id,label FROM image_labels"):
+                labels.setdefault(int(image_id), []).append(str(label))
+        return {
+            str(path): (int(file_size), int(mtime_ns), int(annotation_size), int(annotation_mtime_ns), tuple(labels.get(int(image_id), [])))
+            for image_id, path, file_size, mtime_ns, annotation_size, annotation_mtime_ns in rows
+        }
 
     def _read_annotation_labels(self, image_path: Path, relative: Path, label_names: list[str], coco_labels: dict[str, set[str]]) -> set[str]:
         if self.annotation_format == "coco":
@@ -345,4 +382,5 @@ class DatasetIndexRepository:
             id=int(row[0]), path=Path(row[1]), relative_path=row[2], file_name=row[3],
             file_size=int(row[4]), mtime_ns=int(row[5]), width=int(row[6]), height=int(row[7]),
             annotation_path=Path(row[8]) if row[8] else None, annotation_status=row[9],
+            annotation_size=int(row[10]), annotation_mtime_ns=int(row[11]),
         )

@@ -24,6 +24,7 @@ from src.services.image_service import ImageService
 from src.services.dataset_index import DatasetIndexRepository, IndexedImage
 from src.services.label_group_store import LabelGroupStore
 from src.services.project_service import ProjectService
+from src.services.operation_coordinator import OperationCoordinator
 from src.services.onnx_service import YoloOnnxDetector
 from src.services.format_capabilities import CAPABILITIES, task_for_format
 from .annotation_edit_dialog import AnnotationEditDialog
@@ -772,6 +773,7 @@ class MainWindow(QMainWindow):
         self._pending_save_statistics: tuple[str, Counter[str], Counter[str]] | None = None
         self._restart_statistics_after_finish = False
         self._auto_save_timer = QTimer(self); self._auto_save_timer.setSingleShot(True); self._auto_save_timer.timeout.connect(self.save_current)
+        self.operation_coordinator = OperationCoordinator()
         self._build_ui(); self._apply_annotation_capabilities(); self.task_manager.changed.connect(self._refresh_task_status); self._build_menu(); self._apply_style(); self._update_window_title()
         app = QApplication.instance()
         if app is not None:
@@ -1342,13 +1344,14 @@ class MainWindow(QMainWindow):
         if dialog.exec() == dialog.DialogCode.Accepted and dialog.options: self._start_conversion(dialog.options)
 
     def _operation_blocked(self, operation: str) -> bool:
-        active = (
-            "数据集加载" if self._dataset_thread is not None and self._dataset_thread.isRunning()
-            else "自动标注" if self._auto_thread is not None and self._auto_thread.isRunning()
-            else "数据集转换" if self._conversion_thread is not None and self._conversion_thread.isRunning()
-            else None
-        )
-        if active:
+        coordinator = self.operation_coordinator
+        coordinator.dataset_loading = self._dataset_thread is not None and self._dataset_thread.isRunning()
+        coordinator.auto_labeling = self._auto_thread is not None and self._auto_thread.isRunning()
+        coordinator.converting = self._conversion_thread is not None and self._conversion_thread.isRunning()
+        coordinator.statistics_running = self._stats_thread is not None and self._stats_thread.isRunning()
+        coordinator.statistics_complete = self._statistics_completed
+        allowed, active = coordinator.can_start(operation)
+        if not allowed and active != "statistics":
             english = self.settings.language == "en_US"
             AppDialog.information(
                 "Busy" if english else "任务执行中",
@@ -1356,7 +1359,7 @@ class MainWindow(QMainWindow):
                 self,
             )
             return True
-        if operation in {"auto", "conversion"} and self._stats_thread is not None and self._stats_thread.isRunning() and not self._statistics_completed:
+        if not allowed and active == "statistics":
             english = self.settings.language == "en_US"
             AppDialog.information(
                 "Statistics" if english else "数据统计",
