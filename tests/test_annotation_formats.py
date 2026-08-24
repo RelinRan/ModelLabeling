@@ -1,4 +1,5 @@
 import os
+import json
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -77,3 +78,26 @@ def test_coco_store_preserves_document(tmp_path):
     }
     store.replace_document(document)
     assert store.read_document() == document
+
+
+def test_coco_single_image_transaction_and_checkpoint(tmp_path):
+    directory = tmp_path / "annotations"
+    store = CocoAnnotationStore(directory)
+    store.replace_document({
+        "images": [{"id": 1, "file_name": "old.jpg", "width": 10, "height": 10}],
+        "annotations": [],
+        "categories": [{"id": 1, "name": "person", "supercategory": "object"}],
+        "info": {}, "licenses": [],
+    })
+    store.upsert_image(
+        "new.jpg", 640, 480,
+        [{"name": "person", "supercategory": "object"}],
+        [{"category_name": "person", "bbox": [10, 20, 30, 40], "area": 1200, "iscrowd": 0, "segmentation": []}],
+    )
+    assert store.is_dirty()
+    document = store.read_document()
+    assert len(document["images"]) == 2
+    assert len(document["annotations"]) == 1
+    output = store.export_json()
+    assert output.exists() and not store.is_dirty()
+    assert json.loads(output.read_text(encoding="utf-8")) == document

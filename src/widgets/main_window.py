@@ -751,6 +751,10 @@ class MainWindow(QMainWindow):
     def _start_open_path(self, root: Path) -> None:
         if self._operation_blocked("dataset"):
             return
+        if self._save_thread is not None and self._save_thread.isRunning():
+            AppDialog.information("保存进行中", "请等待当前标注保存完成后再切换数据集", self)
+            return
+        self._export_coco_checkpoint()
         requested_root = Path(root).resolve()
         if self.dataset_root and requested_root == self.dataset_root.resolve():
             language = self.settings.language
@@ -1139,6 +1143,17 @@ class MainWindow(QMainWindow):
             self.dirty = False
         elif self.settings.auto_save:
             self._auto_save_timer.start(50)
+        if not error and not self.settings.auto_save:
+            self._export_coco_checkpoint()
+
+    def _export_coco_checkpoint(self) -> None:
+        if self.settings.annotation_format != "coco" or not self.settings.annotation_dir:
+            return
+        try:
+            AnnotationService.export_coco(self.settings.annotation_dir)
+        except (OSError, ValueError) as exc:
+            if self.isVisible():
+                AppDialog.information("COCO 导出失败", str(exc), self)
 
     def _apply_saved_annotation_statistics(self) -> None:
         pending = self._pending_save_statistics
@@ -1147,6 +1162,20 @@ class MainWindow(QMainWindow):
             return
         path_key, old_labels, new_labels = pending
         self._saved_annotation_labels[path_key] = Counter(new_labels)
+        if self.dataset_index_repository is not None:
+            image_path = Path(path_key)
+            annotation_path = None
+            if self.settings.annotation_dir:
+                if self.settings.annotation_format == "coco":
+                    annotation_path = self.settings.annotation_dir / ".model_labeling.sqlite3"
+                elif self.settings.image_dir:
+                    try:
+                        relative = image_path.relative_to(self.settings.image_dir)
+                        suffix = ".xml" if self.settings.annotation_format == "voc" else ".txt"
+                        annotation_path = self.settings.annotation_dir / relative.with_suffix(suffix)
+                    except ValueError:
+                        annotation_path = None
+            self.dataset_index_repository.update_annotation(image_path, annotation_path, new_labels.elements())
         if self._stats_thread is not None and self._stats_thread.isRunning():
             self._restart_statistics_after_finish = True
             return
@@ -1235,6 +1264,7 @@ class MainWindow(QMainWindow):
         if self._auto_cancel_requested: return
         self.status_progress_host.setVisible(False)
         self.refresh_image_list(); self.refresh_stats(); self._set_dirty(True)
+        self._export_coco_checkpoint()
         AppDialog.information("自动标注", "自动标注完成", self)
     def _auto_failed(self, message: str) -> None:
         if self._auto_cancel_requested: return
@@ -1277,6 +1307,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self._stop_background_tasks_for_exit()
+        self._export_coco_checkpoint()
         self._close_task_list()
         event.accept()
 

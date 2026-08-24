@@ -239,69 +239,67 @@ class AnnotationService:
         return annotations
 
     def _save_coco(self, image_path: Path, annotations: list[Annotation], directory: Path, presets: list[LabelPreset]) -> None:
-        path = self._coco_json_path(directory) or (directory / "annotations.json")
-        document = self._load_coco_document(directory)
-        document.setdefault("info", {"description": "ModelLabeling dataset"})
-        document.setdefault("licenses", [])
-        document.setdefault("images", [])
-        document.setdefault("annotations", [])
-        document.setdefault("categories", [])
-        image = next((item for item in document["images"] if Path(str(item.get("file_name", ""))).name == image_path.name), None)
-        if image is None:
-            image_id = max((int(item.get("id", 0)) for item in document["images"]), default=0) + 1
-            with Image.open(image_path) as source_image:
-                width, height = source_image.size
-            image = {"id": image_id, "file_name": image_path.name, "width": width, "height": height}
-            document["images"].append(image)
-        image_id = image["id"]
-        document["annotations"] = [item for item in document["annotations"] if item.get("image_id") != image_id]
-        category_by_name = {item.get("name"): item.get("id") for item in document["categories"]}
-        for preset in presets:
-            if preset.name not in category_by_name:
-                category_id = max((int(item.get("id", 0)) for item in document["categories"]), default=0) + 1
-                document["categories"].append({"id": category_id, "name": preset.name, "supercategory": "object"})
-                category_by_name[preset.name] = category_id
-        next_annotation_id = max((int(item.get("id", 0)) for item in document["annotations"]), default=0) + 1
+        with Image.open(image_path) as source_image:
+            image_width, image_height = source_image.size
+        categories = [
+            {"name": preset.name, "supercategory": "object"}
+            for preset in presets
+        ]
+        category_by_name = {item["name"]: item for item in categories}
+        drafts: list[dict] = []
         for annotation in annotations:
             if annotation.label not in category_by_name:
-                raise ValueError(f"label is not in COCO categories: {annotation.label}")
+                category = {"name": annotation.label, "supercategory": "object"}
+                categories.append(category)
+                category_by_name[annotation.label] = category
             points = annotation.points
             if annotation.shape_type == ShapeType.KEYPOINT and len(points) < 2:
-                points = [
-                    keypoint.point for keypoint in annotation.keypoints
-                    if keypoint.visibility > 0
-                ]
+                points = [keypoint.point for keypoint in annotation.keypoints if keypoint.visibility > 0]
             rect = rect_from_points(points)
-            width, height = rect.width(), rect.height()
             item = {
-                "id": next_annotation_id, "image_id": image_id, "category_id": category_by_name[annotation.label],
-                "bbox": [rect.left(), rect.top(), width, height], "area": width * height,
-                "iscrowd": 0, "segmentation": [],
+                "category_name": annotation.label,
+                "bbox": [rect.left(), rect.top(), rect.width(), rect.height()],
+                "area": rect.width() * rect.height(),
+                "iscrowd": 0,
+                "segmentation": [],
             }
             if annotation.shape_type == ShapeType.POLYGON:
-                polygon = [coordinate for point in annotation.points for coordinate in (point.x(), point.y())]
-                item["segmentation"] = [polygon]
+                item["segmentation"] = [[
+                    coordinate
+                    for point in annotation.points
+                    for coordinate in (point.x(), point.y())
+                ]]
                 item["area"] = self._polygon_area(annotation.points)
             if annotation.keypoints:
-                item["keypoints"] = [coordinate for keypoint in annotation.keypoints for coordinate in (keypoint.point.x(), keypoint.point.y(), keypoint.visibility)]
-                item["num_keypoints"] = sum(keypoint.visibility > 0 for keypoint in annotation.keypoints)
-                category = next(category for category in document["categories"] if category.get("id") == category_by_name[annotation.label])
-                if not category.get("keypoints"):
-                    category["keypoints"] = [keypoint.name for keypoint in annotation.keypoints]
-                    # COCO stores skeleton indices as 1-based pairs.
-                    category["skeleton"] = [[start + 1, end + 1] for start, end in COCO_PERSON_SKELETON] if len(annotation.keypoints) == 17 else []
-            document["annotations"].append(item)
-            next_annotation_id += 1
-        path.parent.mkdir(parents=True, exist_ok=True)
-        CocoAnnotationStore(directory).replace_document(document)
-        # Replace atomically so an interrupted conversion cannot leave a
-        # truncated or concatenated COCO document for the next image.
-        with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", dir=path.parent, prefix=f".{path.stem}-", suffix=".tmp", delete=False
-        ) as temporary:
-            temporary.write(json.dumps(document, ensure_ascii=False, indent=2))
-            temporary_path = Path(temporary.name)
-        os.replace(temporary_path, path)
+                item["keypoints"] = [
+                    coordinate
+                    for keypoint in annotation.keypoints
+                    for coordinate in (
+                        keypoint.point.x(), keypoint.point.y(), keypoint.visibility,
+                    )
+                ]
+                item["num_keypoints"] = sum(
+                    keypoint.visibility > 0 for keypoint in annotation.keypoints
+                )
+                category = category_by_name[annotation.label]
+                category["keypoints"] = [keypoint.name for keypoint in annotation.keypoints]
+                category["skeleton"] = (
+                    [[start + 1, end + 1] for start, end in COCO_PERSON_SKELETON]
+                    if len(annotation.keypoints) == 17 else []
+                )
+            drafts.append(item)
+        CocoAnnotationStore(directory).upsert_image(
+            image_path.name, image_width, image_height, categories, drafts
+        )
+
+    @staticmethod
+    def export_coco(directory: Path) -> Path | None:
+        store = CocoAnnotationStore(directory)
+        if not store.is_initialized():
+            return None
+        service = AnnotationService()
+        return store.export_json(service._coco_json_path(directory))
+
 
     def save_coco_batch(self, records: list[tuple[Path, list[Annotation]]], directory: Path, presets: list[LabelPreset]) -> None:
         """Write one complete COCO document for a batch conversion."""

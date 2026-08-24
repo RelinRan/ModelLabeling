@@ -263,6 +263,31 @@ class DatasetIndexRepository:
                 (int(width), int(height), annotation_status, int(image_id)),
             )
 
+    def update_annotation(self, image_path: Path, annotation_path: Path | None, labels: Iterable[str]) -> None:
+        """Synchronize one successful editor save with the persistent index."""
+        annotation_size = annotation_mtime_ns = 0
+        if annotation_path is not None and annotation_path.exists():
+            stat = annotation_path.stat()
+            annotation_size, annotation_mtime_ns = stat.st_size, stat.st_mtime_ns
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT id FROM images WHERE path=?", (str(Path(image_path).resolve()),)
+            ).fetchone()
+            if row is None:
+                return
+            image_id = int(row[0])
+            connection.execute(
+                "UPDATE images SET annotation_path=?,annotation_status=?,annotation_size=?,annotation_mtime_ns=? WHERE id=?",
+                (str(annotation_path) if annotation_path else None,
+                 "present" if annotation_path is not None else "missing",
+                 annotation_size, annotation_mtime_ns, image_id),
+            )
+            connection.execute("DELETE FROM image_labels WHERE image_id=?", (image_id,))
+            connection.executemany(
+                "INSERT OR IGNORE INTO image_labels(image_id,label) VALUES(?,?)",
+                [(image_id, str(label)) for label in labels if str(label)],
+            )
+
     def prune_missing(self, cancel_callback=None) -> None:
         """Remove stale rows after a completed directory scan."""
         with self._connect() as connection:
