@@ -1,0 +1,96 @@
+name: release
+
+# Builds desktop clients for Windows / Linux / macOS and publishes them as a
+# GitHub Release. Push a version tag (v1.2.0) to ship; a manual run only
+# builds and uploads the artifacts to the workflow run.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: unit tests
+    runs-on: ubuntu-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Qt runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1 libegl1 libxkbcommon0 libdbus-1-3
+      - run: pip install -r requirements.txt
+      - run: python -m pytest tests -q
+
+  build:
+    name: build ${{ matrix.platform }}
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows-x64
+            sep: ";"
+          - os: ubuntu-latest
+            platform: linux-x64
+            sep: ":"
+          - os: macos-13
+            platform: macos-x64
+            sep: ":"
+          - os: macos-latest
+            platform: macos-arm64
+            sep: ":"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Qt runtime libraries (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1 libegl1 libxkbcommon0
+      - run: pip install -r requirements.txt pyinstaller
+      - name: Build with PyInstaller
+        run: >
+          pyinstaller --noconfirm --clean --onefile --windowed
+          --name ModelLabeling
+          --add-data "icon.png${{ matrix.sep }}."
+          --add-data "icons${{ matrix.sep }}icons"
+          app.py
+      - name: Package
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          [ "$VERSION" = "${GITHUB_REF_NAME}" ] && VERSION="dev-${GITHUB_RUN_NUMBER}"
+          mkdir -p staging
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp dist/ModelLabeling.exe staging/
+          else
+            cp dist/ModelLabeling staging/
+          fi
+          cp -r icons staging/
+          cp icon.png README.md staging/
+          ASSET="ModelLabeling-${VERSION}-${{ matrix.platform }}.zip"
+          (cd staging && zip -r "../$ASSET" .)
+          echo "ASSET=$ASSET" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ASSET }}
+          path: ${{ env.ASSET }}
+          if-no-files-found: error
+      - name: Attach to the GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ASSET }}
+          generate_release_notes: true

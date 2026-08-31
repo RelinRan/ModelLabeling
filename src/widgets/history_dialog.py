@@ -95,7 +95,8 @@ class HistoryDialog(QDialog):
             and (not query or self._fuzzy_match(query, path))
         ]
         self.list.clear()
-        icon_path = Path(__file__).resolve().parents[2] / "icons" / "ic_more.png"
+        from src.app_paths import resource_path
+        icon_path = resource_path("icons/ic_more.png")
         for path in self.filtered_paths:
             item = QListWidgetItem(self.list)
             item.setSizeHint(QSize(0, 36))  # 30px card + 6px margin below

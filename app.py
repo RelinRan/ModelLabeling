@@ -6,6 +6,7 @@ from pathlib import Path
 from PySide6.QtGui import QFont, QIcon, QFontDatabase
 from PySide6.QtWidgets import QApplication
 
+from src.app_paths import resource_path
 from src.widgets.main_window import MainWindow
 
 
@@ -20,7 +21,7 @@ def main() -> int:
         if family in families:
             app.setFont(QFont(family, 9))
             break
-    icon_path = Path(__file__).resolve().parent / "icon.png"
+    icon_path = resource_path("icon.png")
     if icon_path.exists():
         app.setWindowIcon(QIcon(str(icon_path)))
     window = MainWindow()

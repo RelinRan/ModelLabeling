@@ -542,12 +542,12 @@ class CanvasView(QGraphicsView):
 
     @staticmethod
     def _icon_root() -> Path:
-        project_root = Path(__file__).resolve().parents[2]
+        from src.app_paths import resource_path
         for folder in ("icons", "icon"):
-            candidate = project_root / folder
+            candidate = resource_path(folder)
             if candidate.is_dir():
                 return candidate
-        return project_root / "icons"
+        return resource_path("icons")
 
     @property
     def selected_annotation(self) -> Annotation | None:

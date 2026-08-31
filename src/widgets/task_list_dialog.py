@@ -121,7 +121,8 @@ class TaskListDialog(QDialog):
 
         stop = QPushButton()
         stop.setObjectName("taskStopButton")
-        stop.setIcon(QIcon(str(Path(__file__).resolve().parents[2] / "icons" / "ic_stop.png")))
+        from src.app_paths import resource_path
+        stop.setIcon(QIcon(str(resource_path("icons/ic_stop.png"))))
         stop.setIconSize(QSize(15, 15))
         stop.setFixedSize(20, 20)
         stop.setToolTip("\u505c\u6b62")

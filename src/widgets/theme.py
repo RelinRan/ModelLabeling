@@ -114,7 +114,8 @@ def idea_stylesheet() -> str:
     QDialogButtonBox QPushButton { min-width: 76px; }
     QFrame#labelArea, QFrame#labelActions { background: #25272A; border: 1px solid #3E4147; border-radius: 6px; }
     """
-    arrow_path = (Path(__file__).resolve().parents[2] / "icons" / "ic_arrow_down.png").as_posix()
+    from src.app_paths import resource_path
+    arrow_path = resource_path("icons/ic_arrow_down.png").as_posix()
     return stylesheet + f"""
     QComboBox::down-arrow {{
         image: url({arrow_path});

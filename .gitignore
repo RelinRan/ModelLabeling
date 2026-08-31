@@ -8,3 +8,6 @@ backups/
 *.log
 .record_stop
 model_labeling.json
+dist/
+build/
+*.spec
