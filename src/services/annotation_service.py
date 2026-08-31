@@ -154,6 +154,8 @@ class AnnotationService:
             return LoadResult(self._load_yolo_pose(image_path, directory, settings.label_presets, image_size, index))
         if task == "yolo_segmentation":
             return LoadResult(self._load_yolo_segmentation(image_path, directory, settings.label_presets, image_size, index))
+        if task == "yolo_obb":
+            return LoadResult(self._load_yolo_obb(image_path, directory, settings.label_presets, image_size, index))
         return LoadResult(self._load_yolo(image_path, directory, settings.label_presets, image_size, index))
 
     def _save_by_adapter(self, image_path: Path, annotations: list[Annotation], directory: Path, settings: ProjectSettings, adapter) -> SaveResult:
@@ -171,6 +173,8 @@ class AnnotationService:
             self._save_yolo_pose(image_path, annotations, directory, settings.label_presets, settings)
         elif adapter.task.value == "yolo_segmentation":
             self._save_yolo_segmentation(image_path, annotations, directory, settings.label_presets)
+        elif adapter.task.value == "yolo_obb":
+            self._save_yolo_obb(image_path, annotations, directory, settings.label_presets)
         else:
             self._save_yolo(image_path, annotations, directory, settings.label_presets)
         return SaveResult(True)
@@ -667,6 +671,58 @@ class AnnotationService:
             points = [QPointF(values[index] * width, values[index + 1] * height) for index in range(0, len(values), 2)]
             annotations.append(Annotation(ShapeType.POLYGON, preset.name, points, color=label_color(preset.name)))
         return annotations
+
+    def _load_yolo_obb(self, image_path: Path, directory: Path, presets: list[LabelPreset], image_size: tuple[int, int] | None = None, index: DatasetAnnotationIndex | None = None) -> list[Annotation]:
+        """Ultralytics OBB rows: class x1 y1 x2 y2 x3 y3 x4 y4 (normalized)."""
+        txt_path = directory / f"{image_path.stem}.txt"
+        if not txt_path.exists() and index is not None:
+            matches = index.files_by_stem.get(image_path.stem, [])
+            txt_path = matches[0] if matches else txt_path
+        elif not txt_path.exists() and directory.exists():
+            matches = list(directory.rglob(f"{image_path.stem}.txt"))
+            txt_path = matches[0] if matches else txt_path
+        if not txt_path.exists():
+            return []
+        if image_size is None:
+            with Image.open(image_path) as image:
+                width, height = image.size
+        else:
+            width, height = image_size
+        _, by_id = self._preset_maps(presets)
+        annotations: list[Annotation] = []
+        for line_number, raw in enumerate(txt_path.read_text(encoding="utf-8").splitlines(), start=1):
+            parts = raw.split()
+            if len(parts) != 9:
+                raise ValueError(f"{txt_path.name}:{line_number}: expected 9 values for a YOLO OBB row")
+            class_id = int(parts[0])
+            preset = by_id.get(class_id)
+            if preset is None:
+                raise ValueError(f"{txt_path.name}:{line_number}: unknown class id {class_id}")
+            values = [float(item) for item in parts[1:]]
+            if any(value < 0.0 or value > 1.0 for value in values):
+                raise ValueError(f"{txt_path.name}:{line_number}: normalized corner out of range")
+            corners = [QPointF(values[i] * width, values[i + 1] * height) for i in range(0, 8, 2)]
+            annotations.append(Annotation(ShapeType.OBB, preset.name, corners, color=label_color(preset.name)))
+        return annotations
+
+    def _save_yolo_obb(self, image_path: Path, annotations: list[Annotation], directory: Path, presets: list[LabelPreset]) -> None:
+        with Image.open(image_path) as image:
+            width, height = image.size
+        by_name, _ = self._preset_maps(presets)
+        lines: list[str] = []
+        for annotation in annotations:
+            if annotation.label not in by_name:
+                raise ValueError(f"label is not in presets: {annotation.label}")
+            if annotation.shape_type != ShapeType.OBB or len(annotation.points) != 4:
+                raise ValueError("YOLO OBB requires four-corner rotated box annotations")
+            values = [str(by_name[annotation.label])]
+            values.extend(
+                f"{coordinate:.6f}"
+                for point in annotation.points
+                for coordinate in (point.x() / width, point.y() / height)
+            )
+            lines.append(" ".join(values))
+        (directory / f"{image_path.stem}.txt").write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
 
     def _save_yolo(
         self,

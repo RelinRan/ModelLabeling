@@ -146,7 +146,12 @@ class CocoAnnotationStore:
                 existing_keypoints = tuple(payload.get("keypoints", ()))
                 incoming_keypoints = tuple(category.get("keypoints", ()))
                 if existing_keypoints and incoming_keypoints and existing_keypoints != incoming_keypoints:
-                    raise ValueError(f"COCO keypoint schema conflicts with category: {name}")
+                    raise ValueError(
+                        f"COCO keypoint schema conflicts with category: {name}\n"
+                        f"Existing keypoints: {', '.join(existing_keypoints)}\n"
+                        f"New keypoints: {', '.join(incoming_keypoints)}\n"
+                        "Use the same keypoint names/count for this category, or a different category label."
+                    )
                 payload.update({key: value for key, value in category.items() if key != "id"})
                 payload["id"] = category_id
                 connection.execute(

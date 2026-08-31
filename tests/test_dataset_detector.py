@@ -28,6 +28,45 @@ def test_segmentation_row_is_not_misdetected_as_pose(tmp_path):
     assert detected.task_name == "yolo_segmentation"
 
 
+def test_fully_unannotated_datasets_are_detected(tmp_path):
+    # YOLO: images/ + empty labels/, no classes.txt or data.yaml.
+    yolo = tmp_path / "fresh-yolo"
+    (yolo / "images").mkdir(parents=True)
+    (yolo / "labels").mkdir()
+    (yolo / "images" / "a.jpg").write_bytes(b"image")
+    detected = DatasetDetector.detect(yolo)
+    assert (detected.format_name, detected.task_name) == ("yolo", "yolo_detection")
+    assert detected.annotation_dir == yolo / "labels"
+
+    # VOC: JPEGImages/ without any Annotations directory yet.
+    voc = tmp_path / "fresh-voc"
+    (voc / "JPEGImages").mkdir(parents=True)
+    (voc / "JPEGImages" / "a.jpg").write_bytes(b"image")
+    detected = DatasetDetector.detect(voc)
+    assert detected.format_name == "voc"
+    assert detected.annotation_dir == voc / "Annotations"
+    assert not detected.annotation_dir.exists()
+
+    # COCO: annotations.json present with empty annotation lists.
+    coco = tmp_path / "fresh-coco"
+    (coco / "images").mkdir(parents=True)
+    (coco / "annotations").mkdir()
+    (coco / "images" / "a.jpg").write_bytes(b"image")
+    (coco / "annotations" / "annotations.json").write_text(
+        json.dumps({"images": [], "annotations": [], "categories": []}), encoding="utf-8"
+    )
+    detected = DatasetDetector.detect(coco)
+    assert detected.format_name == "coco"
+
+    # A bare folder of images defaults to YOLO detection.
+    bare = tmp_path / "bare-images"
+    bare.mkdir()
+    (bare / "a.jpg").write_bytes(b"image")
+    detected = DatasetDetector.detect(bare)
+    assert (detected.format_name, detected.task_name) == ("yolo", "yolo_detection")
+    assert detected.image_dir == bare
+
+
 def test_official_pose_uses_yaml_schema(tmp_path):
     root = tmp_path / "pose"
     _yolo_layout(

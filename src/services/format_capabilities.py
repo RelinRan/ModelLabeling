@@ -12,6 +12,7 @@ class DatasetTask(str, Enum):
     YOLO_DETECTION = "yolo_detection"
     YOLO_SEGMENTATION = "yolo_segmentation"
     YOLO_POSE = "yolo_pose"
+    YOLO_OBB = "yolo_obb"
     VOC = "voc"
 
 
@@ -27,7 +28,9 @@ class FormatCapabilities:
 
 CAPABILITIES: dict[DatasetTask, FormatCapabilities] = {
     DatasetTask.COCO: FormatCapabilities(
-        DatasetTask.COCO, "COCO", frozenset(ShapeType),
+        DatasetTask.COCO, "COCO",
+        # Standard COCO has no rotated box; OBB is YOLO-only here.
+        frozenset(shape for shape in ShapeType if shape != ShapeType.OBB),
     ),
     DatasetTask.YOLO_DETECTION: FormatCapabilities(
         DatasetTask.YOLO_DETECTION, "YOLO Detection",
@@ -43,12 +46,41 @@ CAPABILITIES: dict[DatasetTask, FormatCapabilities] = {
         # to the outer bbox; a bbox-only object is not a valid pose label.
         frozenset({ShapeType.KEYPOINT}),
     ),
+    DatasetTask.YOLO_OBB: FormatCapabilities(
+        DatasetTask.YOLO_OBB, "YOLO OBB",
+        # Ultralytics OBB rows are exactly four normalized corner points.
+        frozenset({ShapeType.OBB}),
+    ),
     DatasetTask.VOC: FormatCapabilities(
         DatasetTask.VOC, "Pascal VOC", frozenset({ShapeType.RECTANGLE, ShapeType.SQUARE}),
     ),
 }
 
 
+
+
+def _polygon_self_intersects(points) -> bool:
+    """True when any two non-adjacent edges of the polygon cross."""
+    n = len(points)
+    for i in range(n):
+        a1, a2 = points[i], points[(i + 1) % n]
+        for j in range(i + 1, n):
+            b1, b2 = points[j], points[(j + 1) % n]
+            if i == j or (j + 1) % n == i or (i + 1) % n == j:
+                continue
+            if _segments_cross(a1, a2, b1, b2):
+                return True
+    return False
+
+def _segments_cross(p1, p2, p3, p4) -> bool:
+    def orient(a, b, c):
+        value = (b.x() - a.x()) * (c.y() - a.y()) - (b.y() - a.y()) * (c.x() - a.x())
+        return (value > 1e-9) - (value < -1e-9)
+    o1, o2 = orient(p1, p2, p3), orient(p1, p2, p4)
+    o3, o4 = orient(p3, p4, p1), orient(p3, p4, p2)
+    if o1 != o2 and o3 != o4:
+        return True
+    return False
 class UnsupportedAnnotationError(ValueError):
     pass
 
@@ -63,6 +95,8 @@ def task_for_format(annotation_format: str, task: str | DatasetTask | None = Non
         "yolo_detection": DatasetTask.YOLO_DETECTION,
         "yolo_segmentation": DatasetTask.YOLO_SEGMENTATION,
         "yolo_pose": DatasetTask.YOLO_POSE,
+        "yolo_obb": DatasetTask.YOLO_OBB,
+        "obb": DatasetTask.YOLO_OBB,
         "voc": DatasetTask.VOC,
         "pascal_voc": DatasetTask.VOC,
     }
@@ -116,6 +150,24 @@ def validate_annotations(
         if len(schemas) > 1:
             raise UnsupportedAnnotationError(
                 "YOLO Pose requires one consistent keypoint schema across the dataset"
+            )
+    if ShapeType.POLYGON in {a.shape_type for a in annotations}:
+        self_intersecting = [
+            a.label for a in annotations
+            if a.shape_type == ShapeType.POLYGON
+            and len(a.points) >= 4
+            and _polygon_self_intersects(a.points)
+        ]
+        if self_intersecting:
+            raise UnsupportedAnnotationError(
+                "多边形存在自交，请调整顶点: " + ", ".join(sorted(set(self_intersecting)))
+            )
+
+    if capabilities.task == DatasetTask.YOLO_OBB:
+        bad = [annotation.label for annotation in annotations if len(annotation.points) != 4]
+        if bad:
+            raise UnsupportedAnnotationError(
+                "YOLO OBB requires exactly four corner points: " + ", ".join(sorted(set(bad)))
             )
     if capabilities.task == DatasetTask.COCO:
         schemas_by_label: dict[str, set[tuple[str, ...]]] = {}

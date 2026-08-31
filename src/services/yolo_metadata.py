@@ -56,3 +56,25 @@ def yolo_keypoint_names(root: Path, class_id: int = 0) -> list[str]:
     if not isinstance(value, list):
         raise ValueError("YOLO Pose kpt_names must be a list or class-id mapping")
     return [str(name).strip() for name in value]
+
+
+def write_kpt_shape(root: Path, count: int, dimensions: int = 3, names: list[str] | None = None) -> Path:
+    """Persist the keypoint shape into the dataset's data.yaml.
+
+    data.yaml is the authoritative schema source for Ultralytics training:
+    changing the working keypoint count must be recorded there so the
+    dataset stays self-describing and standard-compliant.
+    """
+    root = Path(root)
+    path = find_yolo_yaml(root) or (root / "data.yaml")
+    document: dict[str, Any] = {}
+    if path.is_file():
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8", errors="strict"))
+        if isinstance(loaded, dict):
+            document = loaded
+    document["task"] = document.get("task") or "pose"
+    document["kpt_shape"] = [max(1, int(count)), 2 if int(dimensions) == 2 else 3]
+    if names:
+        document["kpt_names"] = [str(name) for name in names[: max(1, int(count))]]
+    path.write_text(yaml.safe_dump(document, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    return path

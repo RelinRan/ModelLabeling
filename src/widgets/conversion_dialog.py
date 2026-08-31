@@ -9,7 +9,7 @@ from src.models.annotation import LabelPreset
 from src.services.conversion_service import ConversionOptions, ConversionService
 from src.services.dataset_detector import DatasetDetector
 from .common_dialogs import AppDialog
-from .form_layout import BUTTON_TOP_SPACING, configure_buttons, configure_form, set_confirm_button, set_content_margins, size_buttons
+from .form_layout import configure_buttons, configure_form, section_card, set_confirm_button, set_content_margins, size_buttons
 
 
 class ConversionWorker(QObject):
@@ -35,12 +35,11 @@ class ConversionWorker(QObject):
 
 
 class ConversionDialog(QDialog):
-    def __init__(self, presets: list[LabelPreset], parent=None) -> None:
+    def __init__(self, presets: list[LabelPreset], parent=None, default_source: str = "", default_task: str = "") -> None:
         super().__init__(parent)
         self.setObjectName("conversionDialog")
-        self.resize(460, 330)
-        self.setFixedWidth(460)
-        self.setWindowTitle("\u6570\u636e\u96c6\u8f6c\u6362")
+        self.setMinimumWidth(470)
+        self.setWindowTitle("数据转换")
         self.presets = list(presets)
         self.options: ConversionOptions | None = None
         self.source_path = QLineEdit(); self.output_path = QLineEdit()
@@ -50,20 +49,30 @@ class ConversionDialog(QDialog):
         self.source_format.currentIndexChanged.connect(self._refresh_task_options)
         self.output_format.currentIndexChanged.connect(self._refresh_task_options)
         self._refresh_task_options()
-        form = configure_form(QFormLayout())
-        form.addRow("\u6e90\u8def\u5f84", self._path_row(self.source_path, False)); form.addRow("\u6e90\u683c\u5f0f", self.source_format); form.addRow("\u6e90\u4efb\u52a1", self.source_task)
-        form.addRow("\u8f6c\u8def\u5f84", self._path_row(self.output_path, True)); form.addRow("\u8f6c\u683c\u5f0f", self.output_format); form.addRow("\u8f6c\u4efb\u52a1", self.output_task)
+        layout = QVBoxLayout(self); set_content_margins(layout); layout.setSpacing(10)
+        source_card = section_card(layout, "\u6570\u636e\u96c6\u5408")
+        source_form = configure_form(QFormLayout()); source_form.setVerticalSpacing(8)
+        source_form.addRow("\u76ee\u5f55", self._path_row(self.source_path, False)); source_form.addRow("\u683c\u5f0f", self.source_format); source_form.addRow("\u4efb\u52a1", self.source_task)
+        source_card.addLayout(source_form)
+        target_card = section_card(layout, "\u8f6c\u6362\u76ee\u6807")
+        target_form = configure_form(QFormLayout()); target_form.setVerticalSpacing(8)
+        target_form.addRow("\u76ee\u5f55", self._path_row(self.output_path, True)); target_form.addRow("\u683c\u5f0f", self.output_format); target_form.addRow("\u4efb\u52a1", self.output_task)
+        target_card.addLayout(target_form)
         buttons = configure_buttons(QHBoxLayout()); buttons.addStretch(); self.cancel_button = QPushButton("\u53d6\u6d88"); self.confirm_button = QPushButton("\u786e\u8ba4")
         self.cancel_button.clicked.connect(self.reject); self.confirm_button.clicked.connect(self.accept)
         buttons.addWidget(self.cancel_button); buttons.addWidget(self.confirm_button)
         size_buttons(self.cancel_button, self.confirm_button)
         set_confirm_button(self.confirm_button)
-        layout = QVBoxLayout(self); set_content_margins(layout); layout.setSpacing(0); layout.addLayout(form); layout.addSpacing(BUTTON_TOP_SPACING); layout.addLayout(buttons)
-        self._load_last_conversion()
+        layout.addStretch(1)
+        layout.addLayout(buttons)
+        self._load_last_conversion(default_source, default_task)
 
-    def _load_last_conversion(self) -> None:
+    def _load_last_conversion(self, default_source: str = "", default_task: str = "") -> None:
         settings = QSettings("RelinRan", "ModelLabeling")
-        self.source_path.setText(str(settings.value("conversion/source_path", "") or ""))
+        # The currently open dataset takes priority; last conversion is the
+        # fallback when nothing is open.
+        source = default_source or str(settings.value("conversion/source_path", "") or "")
+        self.source_path.setText(source)
         self.output_path.setText(str(settings.value("conversion/output_path", "") or ""))
         source_format = str(settings.value("conversion/source_format", "") or "")
         output_format = str(settings.value("conversion/output_format", "") or "")
@@ -75,6 +84,11 @@ class ConversionDialog(QDialog):
             source = Path(self.source_path.text())
             if source.is_dir():
                 self._detect_source_format(source, show_error=False)
+        # Prefer the live dataset task over the last-conversion pick.
+        if default_task:
+            index = self.source_task.findData(default_task)
+            if index >= 0:
+                self.source_task.setCurrentIndex(index)
 
     def _refresh_task_options(self) -> None:
         def fill(combo: QComboBox, format_name: str) -> None:
@@ -113,7 +127,7 @@ class ConversionDialog(QDialog):
         """Detect a supported dataset layout and select its source format."""
         if not source.is_dir():
             if show_error:
-                AppDialog.information("\u6570\u636e\u96c6\u8f6c\u6362", "\u6e90\u8def\u5f84\u4e0d\u5b58\u5728\u3002", self)
+                AppDialog.information("提示", "\u6e90\u8def\u5f84\u4e0d\u5b58\u5728\u3002", self)
             return False
         try:
             detected_info = DatasetDetector.detect(source)
@@ -145,7 +159,7 @@ class ConversionDialog(QDialog):
             detected = "coco"
         if detected is None:
             if show_error:
-                AppDialog.information("\u6570\u636e\u96c6\u8f6c\u6362", "\u4e0d\u652f\u6301\u6216\u65e0\u6cd5\u8bc6\u522b\u8be5\u6570\u636e\u96c6\u683c\u5f0f\u3002\u8bf7\u9009\u62e9 COCO\u3001YOLO \u6216 Pascal VOC \u6570\u636e\u96c6\u3002", self)
+                AppDialog.information("提示", "\u4e0d\u652f\u6301\u6216\u65e0\u6cd5\u8bc6\u522b\u8be5\u6570\u636e\u96c6\u683c\u5f0f\u3002\u8bf7\u9009\u62e9 COCO\u3001YOLO \u6216 Pascal VOC \u6570\u636e\u96c6\u3002", self)
             return False
         self.source_format.setCurrentIndex(self.source_format.findData(detected))
         if detected == "yolo" and self.source_task.findData("yolo_detection") >= 0:
@@ -155,7 +169,7 @@ class ConversionDialog(QDialog):
     def accept(self) -> None:
         source = Path(self.source_path.text())
         if not source.exists():
-            AppDialog.information("\u8f6c\u6362\u5931\u8d25", "\u6e90\u8def\u5f84\u4e0d\u5b58\u5728", self)
+            AppDialog.information("提示", "\u6e90\u8def\u5f84\u4e0d\u5b58\u5728", self)
             return
         if source.is_dir() and any(source.iterdir()) and not self._detect_source_format(source):
             return

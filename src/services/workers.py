@@ -383,9 +383,10 @@ class DatasetAnnotationSaveWorker(QObject):
             target_dir = self.annotation_dir if self.settings.annotation_format == "coco" else self.annotation_dir / relative_parent
             result = AnnotationService().save(self.image_path, self.annotations, target_dir, self.settings)
             if self.settings.annotation_format == "yolo":
+                # classes.txt is the authoritative class-id mapping for YOLO
+                # label files; bootstrap it for datasets that have none yet.
                 classes_path = self.image_dir.parent / "classes.txt"
-                if classes_path.exists():
-                    classes_path.write_text("\n".join(preset.name for preset in self.settings.label_presets) + "\n", encoding="utf-8")
+                classes_path.write_text("\n".join(preset.name for preset in self.settings.label_presets) + "\n", encoding="utf-8")
             self.finished.emit("" if result.ok else (result.error or "保存标注失败"))
         except Exception as exc:
             self.finished.emit(str(exc))

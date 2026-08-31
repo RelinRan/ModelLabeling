@@ -13,10 +13,11 @@ class CrosshairDialog(QDialog):
 
     def __init__(self, line_width: int, color: str, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("十字辅助")
+        self.setWindowTitle("标注辅助")
         self.setMinimumWidth(320)
         self.line_width = NumericStepper(line_width, 1, 12, 1)
         self.color_button = QPushButton("选择颜色")
+        self.color_button.setFixedHeight(30)
         self._color = QColor(color)
         self._refresh_color_button()
         self.color_button.clicked.connect(self._choose_color)
@@ -26,7 +27,7 @@ class CrosshairDialog(QDialog):
         layout = QVBoxLayout(self)
         set_content_margins(layout)
         layout.setSpacing(0)
-        layout.addWidget(QLabel("注：辅助线会再 W 绘制模式下显示"))
+        layout.addWidget(QLabel("注:辅助线会在 W 绘制模式下显示"))
         layout.addSpacing(ROW_SPACING)
         layout.addLayout(form)
         layout.addSpacing(BUTTON_TOP_SPACING)

@@ -12,11 +12,11 @@ from .form_layout import BUTTON_TOP_SPACING, configure_buttons, configure_form, 
 class AnnotationEditDialog(QDialog):
     """Edit an annotation label and, for pose objects, its keypoint values."""
 
-    def __init__(self, groups: list[LabelGroup], current_label: str, parent=None, language: str = "zh_CN", annotation: Annotation | None = None) -> None:
+    def __init__(self, groups: list[LabelGroup], current_label: str, parent=None, language: str = "zh_CN", annotation: Annotation | None = None, locked_label: bool = False) -> None:
         super().__init__(parent)
         self.english = language == "en_US"
         self.setWindowTitle("Edit Annotation" if self.english else "编辑标注")
-        self.setFixedWidth(300)
+        self.setMinimumWidth(390)
         self.groups = groups
         self.annotation = annotation
         self.deleted = False
@@ -30,6 +30,23 @@ class AnnotationEditDialog(QDialog):
                 break
         self._load_labels(self.group_combo.currentIndex())
         self.label_combo.setCurrentText(current_label)
+        if locked_label:
+            # Keypoint annotations carry the label their keypoint type
+            # predefined; changing it here would desync the type schema.
+            # Hide the drop-down arrows too: a disabled combo that still
+            # shows them reads as clickable and misleads users.
+            locked_style = (
+                "QComboBox:disabled { background: #2B2D30; color: #D7DAE0; border: 1px solid #464A50; } "
+                "QComboBox::drop-down { border: none; width: 0; } "
+                "QComboBox::down-arrow { image: none; width: 0; height: 0; }"
+            )
+            for combo in (self.group_combo, self.label_combo):
+                combo.setEnabled(False)
+                combo.setStyleSheet(locked_style)
+            self.label_combo.setToolTip(
+                "Keypoint annotations use the label predefined by their keypoint type"
+                if self.english else "关键点标注使用点位类型预定义的标签，不可更改"
+            )
         form = configure_form(QFormLayout())
         form.addRow("Label Group" if self.english else "标签组", self.group_combo)
         form.addRow("Label" if self.english else "标签", self.label_combo)
@@ -60,6 +77,10 @@ class AnnotationEditDialog(QDialog):
         layout.addLayout(form)
         layout.addSpacing(BUTTON_TOP_SPACING)
         layout.addLayout(buttons)
+        # Widen the dialog when the keypoint table needs more room.
+        extra = getattr(self, "_keypoint_table_width", 0)
+        if extra:
+            self.setMinimumWidth(max(390, extra + 48))
         self.adjustSize()
 
     def _load_labels(self, index: int) -> None:
@@ -77,6 +98,17 @@ class AnnotationEditDialog(QDialog):
         table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
         table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         table.horizontalHeader().setStretchLastSection(True)
+        # Compute the name column width so the dialog auto-widens for long
+        # keypoint names instead of truncating.
+        from PySide6.QtGui import QFontMetrics
+        from PySide6.QtWidgets import QHeaderView
+        metrics = QFontMetrics(table.font())
+        longest = max((metrics.horizontalAdvance(kp.name) for kp in keypoints), default=60)
+        name_width = min(320, max(70, longest + 26))
+        table.setColumnWidth(0, name_width)
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        # Record the total width so the dialog can widen itself.
+        self._keypoint_table_width = name_width + 3 * 62 + 24
         for row, keypoint in enumerate(keypoints):
             name = QTableWidgetItem(keypoint.name)
             name.setFlags(name.flags() & ~Qt.ItemFlag.ItemIsEditable)

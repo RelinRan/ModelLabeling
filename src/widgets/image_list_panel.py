@@ -144,10 +144,10 @@ class ImageListPanel(QWidget):
         self.list.setUniformItemSizes(True)
         self.list.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.list.setStyleSheet(
-            "QListView#imageFileList, QListView#imageFileList:focus { background: #25272A; padding: 5px; border: 1px solid #464A50; border-radius: 5px; outline: 0; }"
-            "QListView#imageFileList::item { height: 30px; padding: 0 5px; margin: 0 15px 2px 0; background: #35383D; color: #FFFFFF; border: 2px solid transparent; border-radius: 5px; }"
-            "QListView#imageFileList::item:hover { background: #41454C; color: #FFFFFF; border: 2px solid #FFFFFF; }"
-            "QListView#imageFileList::item:selected, QListView#imageFileList::item:selected:focus { background: #2e436e; color: #FFFFFF; font-weight: 600; border: 2px solid #FFFFFF; outline: 0; }"
+            "QListView#imageFileList, QListView#imageFileList:focus { background: #282A2F; border: 1px solid #3C4148; border-radius: 6px; padding: 6px; outline: 0; }"
+            "QListView#imageFileList::item { height: 30px; padding: 0 5px; margin: 0 0 4px 0; background: #2F3237; color: #C6CBD3; border: 1px solid #3E424A; border-left: 3px solid #3E424A; border-radius: 5px; outline: 0; }"
+            "QListView#imageFileList::item:hover { background: #383C42; color: #FFFFFF; border-left: 3px solid #6A84B8; }"
+            "QListView#imageFileList::item:selected, QListView#imageFileList::item:selected:focus { background: #31436B; color: #FFFFFF; font-weight: 600; border: 1px solid #6A84B8; border-left: 3px solid #7FA3E0; outline: 0; }"
         )
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)

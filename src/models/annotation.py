@@ -15,6 +15,7 @@ class ShapeType(str, Enum):
     SQUARE = "square"
     POLYGON = "polygon"
     KEYPOINT = "keypoint"
+    OBB = "obb"
 
 
 def label_color(label: str) -> str:

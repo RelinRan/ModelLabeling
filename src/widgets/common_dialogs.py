@@ -34,10 +34,31 @@ class AppDialog(QDialog):
             "QPushButton:hover { background: #41454C; color: #FFFFFF; }"
         )
         english = dialog_language(parent, language) == "en_US"
-        self.setWindowTitle(title); self.setMinimumWidth(360); self.confirmed = False
+        self.setWindowTitle(title); self.confirmed = False
         layout = QVBoxLayout(self); layout.setContentsMargins(22, 20, 22, 18); layout.setSpacing(18)
-        message_label = QLabel(message); message_label.setWordWrap(True); message_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter); layout.addWidget(message_label)
-        buttons = QHBoxLayout(); buttons.setContentsMargins(0, 12, 0, 0); buttons.addStretch()
+        # Prefer a single line: size to the text width, capped at 85% of the
+        # application window. Only messages wider than that wrap; a wrapping
+        # QLabel reserves two lines even when one would fit, so word wrap is
+        # disabled entirely for single-line messages.
+        text_width = message_label_font_metrics = None
+        probe = QLabel(message)
+        text_width = probe.fontMetrics().horizontalAdvance(message)
+        probe.deleteLater()
+        chrome = 22 + 22 + 30  # dialog margins + rough border allowance
+        single_line = int(text_width * 1.05) + chrome
+        max_width = 520
+        window = parent.window() if parent is not None else None
+        if window is not None:
+            max_width = max(360, int(window.width() * 0.85))
+        if single_line <= max_width:
+            message_label = QLabel(message); message_label.setWordWrap(False)
+            target_width = max(360, single_line)
+        else:
+            message_label = QLabel(message); message_label.setWordWrap(True)
+            target_width = max_width
+        message_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter); layout.addWidget(message_label)
+        self.setFixedWidth(target_width)
+        buttons = QHBoxLayout(); buttons.setContentsMargins(0, 12, 0, 0); buttons.setSpacing(8); buttons.addStretch()
         if confirm:
             cancel = QPushButton("Cancel" if english else "\u53d6\u6d88"); cancel.clicked.connect(self.reject); buttons.addWidget(cancel)
             accept = QPushButton("Confirm" if english else "\u786e\u8ba4"); accept.clicked.connect(self._confirm); buttons.addWidget(accept)
@@ -73,7 +94,7 @@ class AppDialog(QDialog):
         dialog = cls.__new__(cls); QDialog.__init__(dialog, parent); dialog.setWindowTitle(title); dialog.setMinimumWidth(380)
         layout = QVBoxLayout(dialog); layout.setContentsMargins(22, 20, 22, 18)
         message_label = QLabel(message); message_label.setWordWrap(True); layout.addWidget(message_label)
-        buttons = QHBoxLayout(); buttons.setContentsMargins(0, 12, 0, 0); buttons.addStretch(); result = {"value": "cancel"}
+        buttons = QHBoxLayout(); buttons.setContentsMargins(0, 12, 0, 0); buttons.setSpacing(8); buttons.addStretch(); result = {"value": "cancel"}
         labels = (("Cancel" if english else "\u53d6\u6d88", "cancel"), ("Discard" if english else "\u653e\u5f03", "discard"), ("Save" if english else "\u4fdd\u5b58", "save"))
         for text, value in labels:
             button = QPushButton(text); button.clicked.connect(lambda checked=False, value=value: (result.__setitem__("value", value), dialog.accept())); buttons.addWidget(button)

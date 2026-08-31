@@ -25,13 +25,15 @@ def test_settings_shape_options_follow_official_dataset_task_capabilities():
         "yolo_detection": {ShapeType.RECTANGLE, ShapeType.SQUARE},
         "yolo_segmentation": {ShapeType.RECTANGLE, ShapeType.SQUARE, ShapeType.POLYGON},
         "yolo_pose": {ShapeType.KEYPOINT},
+        "yolo_obb": {ShapeType.OBB},
     }
     for task, expected in cases.items():
         dialog.task.setCurrentIndex(dialog.task.findData(task))
         assert _enabled_shapes(dialog) == expected
 
     dialog.format.setCurrentIndex(dialog.format.findData("coco"))
-    assert _enabled_shapes(dialog) == set(ShapeType)
+    # Standard COCO has no rotated box; OBB is YOLO-only.
+    assert _enabled_shapes(dialog) == set(ShapeType) - {ShapeType.OBB}
     dialog.close()
 
 

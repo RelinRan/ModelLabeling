@@ -52,6 +52,33 @@ class LabelGroup:
 
 
 @dataclass
+class KeypointGroup:
+    """A named set of keypoint labels reused across annotations."""
+
+    name: str
+    keypoint_names: list[str] = field(default_factory=list)
+    protected: bool = False
+    label: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "keypoint_names": list(self.keypoint_names),
+            "protected": self.protected,
+            "label": self.label,
+        }
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "KeypointGroup":
+        return cls(
+            name=str(value.get("name", "Default")),
+            keypoint_names=[str(item) for item in value.get("keypoint_names", []) if str(item).strip()],
+            protected=bool(value.get("protected", False)),
+            label=str(value.get("label", "") or ""),
+        )
+
+
+@dataclass
 class ProjectSettings:
     image_dir: Path | None = None
     annotation_dir: Path | None = None
@@ -60,8 +87,8 @@ class ProjectSettings:
     label_presets: list[LabelPreset] = field(default_factory=list)
     line_width: int = 2
     text_size: int = 14
-    crosshair_line_width: int = 2
-    crosshair_color: str = "#ffea00"
+    crosshair_line_width: int = 1
+    crosshair_color: str = "#000000"
     auto_save: bool = True
     onnx_model_path: Path | None = None
     input_size: int = 640
@@ -73,8 +100,11 @@ class ProjectSettings:
     enabled_shapes: list[ShapeType] = field(
         default_factory=lambda: [ShapeType.RECTANGLE, ShapeType.SQUARE, ShapeType.POLYGON]
     )
+    keypoint_count: int = 17
     language: str = "zh_CN"
+    reopen_last_dataset: bool = True
     label_groups: list[LabelGroup] = field(default_factory=list)
+    keypoint_groups: list[KeypointGroup] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.annotation_format = self.annotation_format.lower()
@@ -93,6 +123,7 @@ class ProjectSettings:
         self.enabled_shapes = list(dict.fromkeys(ShapeType(item) for item in self.enabled_shapes))
         if not self.enabled_shapes:
             self.enabled_shapes = [ShapeType.RECTANGLE]
+        self.keypoint_count = max(1, min(135, int(self.keypoint_count)))
         if self.language not in {"zh_CN", "en_US"}:
             self.language = "zh_CN"
         if not self.label_groups:
@@ -120,8 +151,11 @@ class ProjectSettings:
             "nms_threshold": self.nms_threshold,
             "metadata_path": str(self.metadata_path) if self.metadata_path else None,
             "enabled_shapes": [shape.value for shape in self.enabled_shapes],
+            "keypoint_count": self.keypoint_count,
             "language": self.language,
+            "reopen_last_dataset": self.reopen_last_dataset,
             "label_groups": [group.to_dict() for group in self.label_groups],
+            "keypoint_groups": [group.to_dict() for group in self.keypoint_groups],
         }
 
     @classmethod
@@ -137,8 +171,8 @@ class ProjectSettings:
             label_presets=[LabelPreset.from_dict(item) for item in value.get("label_presets", [])],
             line_width=value.get("line_width", 2),
             text_size=value.get("text_size", 14),
-            crosshair_line_width=value.get("crosshair_line_width", 2),
-            crosshair_color=value.get("crosshair_color", "#ffea00"),
+            crosshair_line_width=value.get("crosshair_line_width", 1),
+            crosshair_color=value.get("crosshair_color", "#000000"),
             auto_save=value.get("auto_save", True),
             onnx_model_path=path_or_none(value.get("onnx_model_path")),
             input_size=value.get("input_size", 640),
@@ -150,8 +184,11 @@ class ProjectSettings:
             enabled_shapes=[ShapeType(item) for item in value.get(
                 "enabled_shapes", [shape.value for shape in ShapeType]
             )],
+            keypoint_count=value.get("keypoint_count", 17),
             language=value.get("language", "zh_CN"),
+            reopen_last_dataset=bool(value.get("reopen_last_dataset", True)),
             label_groups=[LabelGroup.from_dict(item) for item in value.get("label_groups", [])],
+            keypoint_groups=[KeypointGroup.from_dict(item) for item in value.get("keypoint_groups", [])],
         )
 
 

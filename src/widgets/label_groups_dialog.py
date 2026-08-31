@@ -8,7 +8,7 @@ from .preset_panel import PresetPanel
 
 
 class LabelGroupsDialog(QDialog):
-    def __init__(self, groups: list[LabelGroup], parent=None, language: str = "zh_CN") -> None:
+    def __init__(self, groups: list[LabelGroup], parent=None, language: str = "zh_CN", protected_labels: set[str] | None = None) -> None:
         super().__init__(parent)
         self.language = language; english = language == "en_US"
         self.setWindowTitle("Label Groups" if english else "\u6807\u7b7e\u5206\u7ec4"); self.setMinimumSize(760, 500)
@@ -21,7 +21,15 @@ class LabelGroupsDialog(QDialog):
             for group in groups
         ]
         self.group_list = QListWidget(); self.group_list.currentRowChanged.connect(self._select_group)
+        self.group_list.setObjectName("groupFileList")
+        self.group_list.setStyleSheet(
+            "QListWidget#groupFileList, QListWidget#groupFileList:focus { background: #25272A; border: 1px solid #464A50; border-radius: 5px; padding: 6px; outline: 0; } "
+            "QListWidget#groupFileList::item { height: 30px; padding: 0 5px; margin: 0; background: #35383D; color: #FFFFFF; border: 2px solid transparent; border-radius: 5px; } "
+            "QListWidget#groupFileList::item { margin-bottom: 6px; } QListWidget#groupFileList::item:hover { background: #41454C; color: #FFFFFF; border: 2px solid #FFFFFF; } "
+            "QListWidget#groupFileList::item:selected, QListWidget#groupFileList::item:selected:focus { background: #2e436e; color: #FFFFFF; font-weight: 600; border: 2px solid #FFFFFF; outline: 0; }"
+        )
         self.panel = PresetPanel(language=language); self.panel.groupsChanged.connect(self._sync_group)
+        self.panel.set_protected_labels(set(protected_labels or set()))
         self.add_group_button = QPushButton("Add Group" if english else "\u65b0\u589e\u5206\u7ec4")
         self.edit_group_button = QPushButton("Edit Group" if english else "\u7f16\u8f91\u5206\u7ec4")
         self.delete_group_button = QPushButton("Delete Group" if english else "\u5220\u9664\u5206\u7ec4")
@@ -69,7 +77,7 @@ class LabelGroupsDialog(QDialog):
         dialog = NameDialog("Add Label Group" if self.english else "\u65b0\u589e\u6807\u7b7e\u7ec4", parent=self, language=self.language)
         if dialog.exec() == dialog.DialogCode.Accepted:
             name = dialog.name_edit.text().strip()
-            if name and all(group.name != name for group in self.groups): self.groups.append(LabelGroup(name, [])); self._refresh_groups(); self.group_list.setCurrentRow(len(self.groups) - 1)
+            if name and all(group.name != name for group in self.groups): self.groups.append(LabelGroup(name, [LabelPreset("object", 0, "#00e5ff")])); self._refresh_groups(); self.group_list.setCurrentRow(len(self.groups) - 1)
 
     def edit_group(self) -> None:
         row = self.group_list.currentRow()
@@ -82,7 +90,7 @@ class LabelGroupsDialog(QDialog):
     def delete_group(self) -> None:
         row = self.group_list.currentRow()
         if row < 0: return
-        if self.groups[row].protected: AppDialog.information("Label Groups" if self.english else "\u6807\u7b7e\u5206\u7ec4", "The default label group cannot be deleted." if self.english else "\u9ed8\u8ba4\u6807\u7b7e\u7ec4\u4e0d\u53ef\u5220\u9664\u3002", self); return
+        if self.groups[row].protected: AppDialog.information("提示" if self.english else "\u6807\u7b7e\u5206\u7ec4", "The default label group cannot be deleted." if self.english else "\u9ed8\u8ba4\u6807\u7b7e\u7ec4\u4e0d\u53ef\u5220\u9664\u3002", self); return
         name = self.groups[row].name
-        if not AppDialog.question("Delete Label Group" if self.english else "\u5220\u9664\u6807\u7b7e\u7ec4", f"Delete label group '{name}'?" if self.english else f"\u786e\u8ba4\u5220\u9664\u6807\u7b7e\u7ec4\u201c{name}\u201d\u5417\uff1f", self): return
+        if not AppDialog.question("提示" if self.english else "\u5220\u9664\u6807\u7b7e\u7ec4", f"Delete label group '{name}'?" if self.english else f"\u786e\u8ba4\u5220\u9664\u6807\u7b7e\u7ec4\u201c{name}\u201d\u5417\uff1f", self): return
         self.groups.pop(row); self._refresh_groups(); self.group_list.setCurrentRow(max(0, row - 1))
