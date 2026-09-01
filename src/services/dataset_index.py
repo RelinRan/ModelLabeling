@@ -119,9 +119,9 @@ class DatasetIndexRepository:
         if normalized_label:
             conditions.append(
                 "EXISTS (SELECT 1 FROM image_labels il "
-                "WHERE il.image_id = images.id AND il.label LIKE ? COLLATE NOCASE)"
+                "WHERE il.image_id = images.id AND il.label = ? COLLATE NOCASE)"
             )
-            parameters.append(f"%{normalized_label}%")
+            parameters.append(normalized_label)
         return (f" WHERE {' AND '.join(conditions)}" if conditions else "", parameters)
 
     def count(self, query: str = "", status: str = "all", label: str = "") -> int:

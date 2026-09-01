@@ -61,6 +61,23 @@ def test_coco_status_and_labels_use_relative_path_without_basename_merging(tmp_p
     assert [item.relative_path.replace("\\", "/") for item in repository.get_page(0, 10, label="vehicle")] == ["val/same.jpg"]
 
 
+def test_label_filter_matches_the_complete_name_not_a_substring(tmp_path):
+    image_dir = tmp_path / "images"
+    label_dir = tmp_path / "labels"
+    paths = [image_dir / f"{name}.jpg" for name in ("car", "cart", "racecar")]
+    for path in paths:
+        _image(path)
+    repository = DatasetIndexRepository(tmp_path, image_dir, label_dir, "yolo")
+    records = [item for batch in repository.scan_paths(batch_size=10) for item in batch]
+    repository.upsert_batch(records)
+    repository.update_annotation(paths[0], label_dir / "car.txt", ["car"])
+    repository.update_annotation(paths[1], label_dir / "cart.txt", ["cart"])
+    repository.update_annotation(paths[2], label_dir / "racecar.txt", ["racecar"])
+
+    assert [item.path.name for item in repository.get_page(0, 10, label="car")] == ["car.jpg"]
+    assert [item.path.name for item in repository.get_page(0, 10, label="CAR")] == ["car.jpg"]
+
+
 def test_empty_annotation_files_are_unlabeled_and_save_updates_immediately(tmp_path):
     image_dir = tmp_path / "images"
     label_dir = tmp_path / "labels"

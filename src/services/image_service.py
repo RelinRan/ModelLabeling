@@ -155,5 +155,5 @@ class ImageService:
             for record in records
             if (not normalized or normalized in record.path.name.casefold())
             and (status == "all" or record.status == status)
-            and (not label_query or any(label_query in annotation.label.casefold() for annotation in record.annotations))
+            and (not label_query or any(label_query == annotation.label.casefold() for annotation in record.annotations))
         ]
