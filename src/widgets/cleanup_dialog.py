@@ -194,38 +194,40 @@ class CleanupDialog(QDialog):
         self.result_label.setPlainText("正在扫描…" if not self.english else "Scanning…")
         threading.Thread(target=self._scan_worker, args=(detected,), daemon=True).start()
 
-    def _image_has_annotations(self, format_name: str, image: Path, detected) -> bool:
+    def _image_annotation_state(self, format_name: str, image: Path, detected) -> str:
         """Fast format-aware check: no PIL decode, no full annotation parse.
 
-        Returns False for missing/empty/corrupt annotation files so the
-        result matches AnnotationService.load's "useless" judgement.
+        Returns "has" (annotated), "empty" (no usable annotation), or
+        "error" (annotation file exists but cannot be read/parsed). Only
+        "empty" images are cleanup candidates; "error" files are reported
+        separately so the annotator can inspect them.
         """
         try:
             relative = image.relative_to(detected.image_dir)
         except ValueError:
-            return False
+            return "error"
         if format_name == "yolo":
             label_file = detected.annotation_dir / relative.with_suffix(".txt")
             if not label_file.is_file():
-                return False
+                return "empty"
             try:
-                return any(line.strip() for line in label_file.read_text(encoding="utf-8", errors="ignore").splitlines())
+                return "has" if any(line.strip() for line in label_file.read_text(encoding="utf-8", errors="ignore").splitlines()) else "empty"
             except OSError:
-                return False
+                return "error"
         if format_name == "voc":
             xml_file = detected.annotation_dir / relative.with_suffix(".xml")
             if not xml_file.is_file():
-                return False
+                return "empty"
             try:
                 import xml.etree.ElementTree as ET
                 root = ET.parse(xml_file).getroot()
                 for obj in root.iter("object"):
                     bbox = obj.find("bndbox")
                     if bbox is not None and bbox.find("xmin") is not None:
-                        return True
-                return False
+                        return "has"
+                return "empty"
             except (OSError, ET.ParseError):
-                return False
+                return "error"
         if format_name == "coco":
             # One JSON read serves every image: any annotation row for the
             # image's basename counts as labeled. The SQLite working copy may
@@ -249,8 +251,8 @@ class CleanupDialog(QDialog):
                     }
                 except (OSError, ValueError):
                     self._coco_annotated_names = set()
-            return image.name in self._coco_annotated_names
-        return False
+            return "has" if image.name in self._coco_annotated_names else "empty"
+        return "error"
 
     def _scan_worker(self, detected) -> None:
         """Background scan; emits progress and a finished payload."""
@@ -261,11 +263,15 @@ class CleanupDialog(QDialog):
         images = sorted(path for path in detected.image_dir.rglob("*")
                         if path.is_file() and path.suffix.lower() in SUPPORTED_IMAGE_EXTENSIONS)
         useless: list[Path] = []
+        problematic: list[Path] = []
         for index, image in enumerate(images, start=1):
             if index % 5 == 0 or index == len(images):
                 self.scan_progress.emit(index, len(images), len(useless))
-            if not self._image_has_annotations(format_name, image, detected):
+            state = self._image_annotation_state(format_name, image, detected)
+            if state == "empty":
                 useless.append(image)
+            elif state == "error":
+                problematic.append(image)
 
         # Annotation files whose image no longer exists (keeps folders in
         # sync when images were deleted outside the app).
@@ -293,6 +299,7 @@ class CleanupDialog(QDialog):
         self.scan_finished.emit({
             "useless": useless,
             "orphans": orphans,
+            "problematic": problematic,
             "total": len(images),
         })
 
@@ -308,12 +315,13 @@ class CleanupDialog(QDialog):
         useless: list[Path] = list(payload.get("useless", []))
         orphans: list[Path] = list(payload.get("orphans", []))
         total: int = int(payload.get("total", 0))
+        problematic: list[Path] = list(payload.get("problematic", []))
         self._to_delete_images = useless
         self._to_delete_annotations = orphans
         self.scan_button.setEnabled(True)
 
         useful = total - len(useless)
-        if useless or orphans:
+        if useless or orphans or problematic:
             lines = [f"共 {total} 张图片，{useful} 张有有效标注。"]
             if useless:
                 lines.append(f"以下 {len(useless)} 张图片没有标注或标注为空，将连同标注文件一起删除：")
@@ -325,10 +333,16 @@ class CleanupDialog(QDialog):
                 lines += [f"  - {p.relative_to(self._image_dir.parent)}" for p in orphans[:10]]
                 if len(orphans) > 10:
                     lines.append(f"  …（其余 {len(orphans) - 10} 个略）")
+            if problematic:
+                lines.append(f"以下 {len(problematic)} 个文件存在问题（标注文件无法读取/解析），不会删除，请人工检查：")
+                lines += [f"  - {p.relative_to(self._image_dir.parent)}" for p in problematic[:10]]
+                if len(problematic) > 10:
+                    lines.append(f"  …（其余 {len(problematic) - 10} 个略）")
             self.result_label.setPlainText("\n".join(lines))
-            self.confirm_button.setEnabled(True)
+            self.confirm_button.setEnabled(bool(useless or orphans))
             self.scan_button.setDefault(False)
-            set_confirm_button(self.confirm_button)
+            if useless or orphans:
+                set_confirm_button(self.confirm_button)
         else:
             self.result_label.setPlainText(
                 f"共 {total} 张图片，全部有有效标注，标注文件与图片一一对应，无需清理。"
