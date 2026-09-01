@@ -11,3 +11,12 @@ model_labeling.json
 dist/
 build/
 *.spec
+
+# --- intermediate artifacts ---
+# anything produced during development/debugging goes into tmp/ and stays out
+# of version control
+tmp/
+recovered/
+test_shots/
+_*.py
+!test_annotation_flow.py
