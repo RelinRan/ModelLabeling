@@ -62,7 +62,6 @@ class CleanupDialog(QDialog):
         self.scan_button.setFixedHeight(30)
         source_card.addWidget(self.scan_button)
         self.scan_finished.connect(self._on_scan_finished)
-
         # ---- scan result module ----------------------------------------------
         result_card = section_card(layout, "扫描结果" if not self.english else "Scan Result")
         self.result_label = QPlainTextEdit()
@@ -100,13 +99,27 @@ class CleanupDialog(QDialog):
         cleanup_card.addWidget(self.warning_label)
 
         buttons = configure_buttons(QHBoxLayout()); buttons.addStretch()
-        # The start-cleanup button shares the start-scan button's look: same
-        # 30px height and the same emphasized default style.
+        # The start-cleanup button matches the start-scan button exactly:
+        # same height, same width, and the same emphasized default colors
+        # (replicated via QSS so the look does not depend on which button
+        # currently owns the window's Enter default).
         self.confirm_button = QPushButton("开始清理" if not self.english else "Start Cleanup")
         self.confirm_button.setEnabled(False)
         self.confirm_button.clicked.connect(self._clean)
         self.confirm_button.setFixedHeight(30)
-        set_confirm_button(self.confirm_button)
+        self.confirm_button.setStyleSheet(
+            "QPushButton { background: #3A4E78; border: 1px solid #6A84B8; border-radius: 5px; "
+            "padding: 4px 12px; color: #FFFFFF; } "
+            "QPushButton:hover { background: #45597F; border-color: #7FA3E0; color: #FFFFFF; } "
+            "QPushButton:pressed { background: #2E436E; border-color: #6A84B8; } "
+            "QPushButton:disabled { color: #737780; border-color: #3A3D42; background: #303236; }"
+        )
+        shared_width = max(
+            self.scan_button.sizeHint().width(),
+            self.confirm_button.sizeHint().width(),
+        ) + 2
+        self.scan_button.setFixedWidth(shared_width)
+        self.confirm_button.setFixedWidth(shared_width)
         buttons.addWidget(self.confirm_button)
         cleanup_card.addLayout(buttons)
 
