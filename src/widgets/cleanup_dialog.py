@@ -81,7 +81,7 @@ class CleanupDialog(QDialog):
             "font-size: 12px; }"
         )
         self.result_label.setMinimumHeight(80)
-        self.result_label.setMaximumHeight(160)
+        self.result_label.setMaximumHeight(80)
         result_card.addWidget(self.result_label)
 
         # ---- cleanup operation module ----------------------------------------
@@ -131,7 +131,7 @@ class CleanupDialog(QDialog):
             "font-size: 12px; }"
         )
         self.log_view.setMinimumHeight(80)
-        self.log_view.setMaximumHeight(160)
+        self.log_view.setMaximumHeight(80)
         cleanup_card.addWidget(self.log_view, 1)
 
         set_confirm_button(self.scan_button)  # Enter triggers scan first
