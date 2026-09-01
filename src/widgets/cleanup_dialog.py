@@ -67,6 +67,10 @@ class CleanupDialog(QDialog):
         result_card = section_card(layout, "扫描结果" if not self.english else "Scan Result")
         self.result_label = QPlainTextEdit()
         self.result_label.setReadOnly(True)
+        # Keep text selectable and copyable (mouse, keyboard, context menu).
+        self.result_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.TextSelectableByKeyboard
+        )
         self.result_label.setPlaceholderText(
             "点击「开始扫描」后在此显示扫描结果。" if not self.english
             else "Start a scan to see the report here."
