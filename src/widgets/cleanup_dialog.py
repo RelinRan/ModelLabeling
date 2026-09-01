@@ -56,6 +56,8 @@ class CleanupDialog(QDialog):
         self.scan_button.clicked.connect(self._scan)
         source_card.addWidget(self.scan_button)
 
+        # ---- scan result module ----------------------------------------------
+        result_card = section_card(layout, "扫描结果" if not self.english else "Scan Result")
         self.result_label = QLabel("")
         self.result_label.setWordWrap(True)
         self.result_label.setStyleSheet(
@@ -63,9 +65,12 @@ class CleanupDialog(QDialog):
             "padding: 8px 10px; color: #B8C7E6; font-size: 12px; }"
         )
         self.result_label.setMinimumHeight(50)
-        layout.addWidget(self.result_label)
+        result_card.addWidget(self.result_label)
 
-        # ---- risk warning above the action buttons --------------------------
+        # ---- cleanup operation module ----------------------------------------
+        cleanup_card = section_card(layout, "清理操作" if not self.english else "Cleanup")
+
+        # risk warning above the action buttons
         self.warning_label = QLabel(
             "⚠ 危险操作：清理会永久删除以下文件（优先移入回收站，但无法保证恢复）：\n"
             "无标注的图片、与之对应的标注文件、以及图片已不存在的孤立标注文件；COCO 会同时改写 annotations.json。请先确认扫描结果，建议提前备份数据集。"
@@ -79,9 +84,8 @@ class CleanupDialog(QDialog):
             "QLabel { background: #3A2A24; border: 1px solid #8A4B3A; border-radius: 5px; "
             "padding: 8px 10px; color: #FFB08A; font-size: 12px; font-weight: 600; }"
         )
-        layout.addWidget(self.warning_label)
+        cleanup_card.addWidget(self.warning_label)
 
-        # ---- start cleanup + selectable log ----------------------------------
         buttons = configure_buttons(QHBoxLayout()); buttons.addStretch()
         self.cancel_button = QPushButton("取消" if not self.english else "Cancel")
         self.confirm_button = QPushButton("开始清理" if not self.english else "Start Cleanup")
@@ -91,7 +95,7 @@ class CleanupDialog(QDialog):
         buttons.addWidget(self.cancel_button); buttons.addWidget(self.confirm_button)
         size_buttons(self.cancel_button, self.confirm_button)
         self.confirm_button.setFixedHeight(30)
-        layout.addLayout(buttons)
+        cleanup_card.addLayout(buttons)
 
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
@@ -105,7 +109,7 @@ class CleanupDialog(QDialog):
             "font-size: 12px; }"
         )
         self.log_view.setMinimumHeight(160)
-        layout.addWidget(self.log_view, 1)
+        cleanup_card.addWidget(self.log_view, 1)
 
         set_confirm_button(self.scan_button)  # Enter triggers scan first
 
