@@ -88,20 +88,17 @@ class CleanupDialog(QDialog):
         result_card.addWidget(self.result_label)
 
         # ---- cleanup operation module ----------------------------------------
-        cleanup_card = section_card(layout, "清理操作" if not self.english else "Cleanup")
-
-        # risk warning above the action buttons: a slim, borderless text line
+        # The risk warning sits at the far right of the section title row.
         self.warning_label = QLabel(
             "⚠ 危险操作：删除不可恢复，请先备份数据集。"
             if not self.english else
             "⚠ Destructive: deletions are permanent; back up the dataset first."
         )
-        self.warning_label.setWordWrap(True)
         self.warning_label.setStyleSheet(
             "QLabel { background: transparent; border: none; color: #FFB08A; "
             "font-size: 12px; font-weight: 600; }"
         )
-        cleanup_card.addWidget(self.warning_label)
+        cleanup_card = section_card(layout, "清理操作" if not self.english else "Cleanup", badge=self.warning_label)
 
         buttons = configure_buttons(QHBoxLayout())
         # The start-cleanup button keeps the start-scan button's height and
