@@ -33,9 +33,7 @@ jobs:
     name: build ${{ matrix.platform }}
     needs: test
     runs-on: ${{ matrix.os }}
-    # A platform failure must not block publishing the others (e.g. macOS
-    # packaging quirks); publish only attaches the artifacts that exist.
-    continue-on-error: true
+    # Both desktop targets are required for a complete release.
     strategy:
       fail-fast: false
       matrix:
