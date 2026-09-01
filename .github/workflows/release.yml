@@ -46,12 +46,6 @@ jobs:
           - os: ubuntu-latest
             platform: linux-x64
             sep: ":"
-          - os: macos-13
-            platform: macos-x64
-            sep: ":"
-          - os: macos-latest
-            platform: macos-arm64
-            sep: ":"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
