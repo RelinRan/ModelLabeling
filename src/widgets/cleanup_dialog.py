@@ -59,8 +59,8 @@ class CleanupDialog(QDialog):
         # ---- scan + report ---------------------------------------------------
         self.scan_button = QPushButton("开始扫描" if not self.english else "Start Scan")
         self.scan_button.clicked.connect(self._start_scan)
+        self.scan_button.setFixedHeight(30)
         source_card.addWidget(self.scan_button)
-        self.scan_progress.connect(self._on_scan_progress)
         self.scan_finished.connect(self._on_scan_finished)
 
         # ---- scan result module ----------------------------------------------
@@ -100,23 +100,22 @@ class CleanupDialog(QDialog):
         cleanup_card.addWidget(self.warning_label)
 
         buttons = configure_buttons(QHBoxLayout()); buttons.addStretch()
-        # The start-cleanup button matches the dataset card's buttons (same
-        # 30px height, width follows the text); Enter still triggers it.
+        # The start-cleanup button shares the start-scan button's look: same
+        # 30px height and the same emphasized default style.
         self.confirm_button = QPushButton("开始清理" if not self.english else "Start Cleanup")
         self.confirm_button.setEnabled(False)
         self.confirm_button.clicked.connect(self._clean)
         self.confirm_button.setFixedHeight(30)
+        set_confirm_button(self.confirm_button)
         buttons.addWidget(self.confirm_button)
         cleanup_card.addLayout(buttons)
 
+        # The log starts empty; it only fills in when cleanup actually runs.
+        # Its pane matches the scan-result pane's background/border exactly.
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
-        self.log_view.setPlaceholderText(
-            "清理日志：每条操作的详细记录，可直接用鼠标选中复制。" if not self.english
-            else "Cleanup log: select any text to copy it."
-        )
         self.log_view.setStyleSheet(
-            "QPlainTextEdit { background: #1E2024; color: #C9D1D9; border: 1px solid #3E424A; "
+            "QPlainTextEdit { background: #2A2C31; color: #B8C7E6; border: 1px solid #3E424A; "
             "border-radius: 5px; padding: 6px; font-family: Consolas, 'Courier New', monospace; "
             "font-size: 12px; }"
         )
@@ -243,10 +242,6 @@ class CleanupDialog(QDialog):
             "total": len(images),
         })
 
-    def _on_scan_progress(self, done: int, total: int) -> None:
-        percent = int(done / total * 100) if total else 100
-        self.scan_button.setText(f"{percent}%")
-
     def _on_scan_finished(self, payload: object) -> None:
         useless: list[Path] = list(payload.get("useless", []))
         orphans: list[Path] = list(payload.get("orphans", []))
@@ -254,7 +249,6 @@ class CleanupDialog(QDialog):
         self._to_delete_images = useless
         self._to_delete_annotations = orphans
         self.scan_button.setEnabled(True)
-        self.scan_button.setText("开始扫描" if not self.english else "Start Scan")
 
         useful = total - len(useless)
         if useless or orphans:
