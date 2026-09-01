@@ -65,13 +65,19 @@ class CleanupDialog(QDialog):
 
         # ---- scan result module ----------------------------------------------
         result_card = section_card(layout, "扫描结果" if not self.english else "Scan Result")
-        self.result_label = QLabel("")
-        self.result_label.setWordWrap(True)
-        self.result_label.setStyleSheet(
-            "QLabel { background: #2A2C31; border: 1px solid #3E424A; border-radius: 5px; "
-            "padding: 8px 10px; color: #B8C7E6; font-size: 12px; }"
+        self.result_label = QPlainTextEdit()
+        self.result_label.setReadOnly(True)
+        self.result_label.setPlaceholderText(
+            "点击「开始扫描」后在此显示扫描结果。" if not self.english
+            else "Start a scan to see the report here."
         )
-        self.result_label.setMinimumHeight(50)
+        self.result_label.setStyleSheet(
+            "QPlainTextEdit { background: #2A2C31; color: #B8C7E6; border: 1px solid #3E424A; "
+            "border-radius: 5px; padding: 6px; font-family: Consolas, 'Courier New', monospace; "
+            "font-size: 12px; }"
+        )
+        self.result_label.setMinimumHeight(130)
+        self.result_label.setMaximumHeight(160)
         result_card.addWidget(self.result_label)
 
         # ---- cleanup operation module ----------------------------------------
@@ -114,7 +120,8 @@ class CleanupDialog(QDialog):
             "border-radius: 5px; padding: 6px; font-family: Consolas, 'Courier New', monospace; "
             "font-size: 12px; }"
         )
-        self.log_view.setMinimumHeight(160)
+        self.log_view.setMinimumHeight(130)
+        self.log_view.setMaximumHeight(160)
         cleanup_card.addWidget(self.log_view, 1)
 
         set_confirm_button(self.scan_button)  # Enter triggers scan first
@@ -178,7 +185,7 @@ class CleanupDialog(QDialog):
 
         self.scan_button.setEnabled(False)
         self.confirm_button.setEnabled(False)
-        self.result_label.setText("正在扫描…" if not self.english else "Scanning…")
+        self.result_label.setPlainText("正在扫描…" if not self.english else "Scanning…")
         threading.Thread(target=self._scan_worker, args=(detected,), daemon=True).start()
 
     def _scan_worker(self, detected) -> None:
@@ -262,12 +269,12 @@ class CleanupDialog(QDialog):
                 lines += [f"  - {p.relative_to(self._image_dir.parent)}" for p in orphans[:10]]
                 if len(orphans) > 10:
                     lines.append(f"  …（其余 {len(orphans) - 10} 个略）")
-            self.result_label.setText("\n".join(lines))
+            self.result_label.setPlainText("\n".join(lines))
             self.confirm_button.setEnabled(True)
             self.scan_button.setDefault(False)
             set_confirm_button(self.confirm_button)
         else:
-            self.result_label.setText(
+            self.result_label.setPlainText(
                 f"共 {total} 张图片，全部有有效标注，标注文件与图片一一对应，无需清理。"
                 if not self.english else
                 f"{total} images scanned: every image has valid annotations "
