@@ -4,7 +4,7 @@ import threading
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QComboBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QComboBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 from src.models.annotation import LabelPreset
 from src.services.annotation_service import AnnotationService
@@ -98,15 +98,14 @@ class CleanupDialog(QDialog):
         )
         cleanup_card.addWidget(self.warning_label)
 
-        buttons = configure_buttons(QHBoxLayout()); buttons.addStretch()
-        # The start-cleanup button matches the start-scan button exactly:
-        # same height, same width, and the same emphasized default colors
-        # (replicated via QSS so the look does not depend on which button
-        # currently owns the window's Enter default).
+        buttons = configure_buttons(QHBoxLayout())
+        # The start-cleanup button keeps the start-scan button's height and
+        # accent colors, but spans the full width of its row.
         self.confirm_button = QPushButton("开始清理" if not self.english else "Start Cleanup")
         self.confirm_button.setEnabled(False)
         self.confirm_button.clicked.connect(self._clean)
         self.confirm_button.setFixedHeight(30)
+        self.confirm_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.confirm_button.setStyleSheet(
             "QPushButton { background: #3A4E78; border: 1px solid #6A84B8; border-radius: 5px; "
             "padding: 4px 12px; color: #FFFFFF; } "
@@ -114,17 +113,6 @@ class CleanupDialog(QDialog):
             "QPushButton:pressed { background: #2E436E; border-color: #6A84B8; } "
             "QPushButton:disabled { color: #737780; border-color: #3A3D42; background: #303236; }"
         )
-        # Shared width = the wider of the two button texts (plus the 12px
-        # per-side QSS padding and the 1px borders), so both buttons are
-        # exactly as wide as the longest label.
-        metrics = self.confirm_button.fontMetrics()
-        text_width = max(
-            metrics.horizontalAdvance(self.scan_button.text()),
-            metrics.horizontalAdvance(self.confirm_button.text()),
-        )
-        shared_width = text_width + 2 * 12 + 2
-        self.scan_button.setFixedWidth(shared_width)
-        self.confirm_button.setFixedWidth(shared_width)
         buttons.addWidget(self.confirm_button)
         cleanup_card.addLayout(buttons)
 
