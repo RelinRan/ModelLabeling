@@ -31,7 +31,7 @@ class CleanupDialog(QDialog):
     logged into a read-only, selectable text area below the start button.
     """
 
-    scan_progress = Signal(int, int)
+    scan_progress = Signal(int, int, int)
     scan_finished = Signal(object)
 
     def __init__(self, presets: list[LabelPreset], parent=None, default_source: str = "", language: str = "zh_CN") -> None:
@@ -61,6 +61,7 @@ class CleanupDialog(QDialog):
         self.scan_button.clicked.connect(self._start_scan)
         self.scan_button.setFixedHeight(30)
         source_card.addWidget(self.scan_button)
+        self.scan_progress.connect(self._on_scan_progress)
         self.scan_finished.connect(self._on_scan_finished)
         # ---- scan result module ----------------------------------------------
         result_card = section_card(layout, "扫描结果" if not self.english else "Scan Result")
@@ -210,7 +211,7 @@ class CleanupDialog(QDialog):
         useless: list[Path] = []
         for index, image in enumerate(images, start=1):
             if index % 5 == 0 or index == len(images):
-                self.scan_progress.emit(index, len(images))
+                self.scan_progress.emit(index, len(images), len(useless))
             record = type("R", (), {"path": image, "width": 0, "height": 0, "file_format": "", "file_size": 0})()
             try:
                 result = service.load(image, detected.annotation_dir, settings)
@@ -247,6 +248,14 @@ class CleanupDialog(QDialog):
             "orphans": orphans,
             "total": len(images),
         })
+
+    def _on_scan_progress(self, done: int, total: int, useless_count: int) -> None:
+        percent = int(done / total * 100) if total else 100
+        self.result_label.setPlainText(
+            f"正在扫描 {done}/{total}（{percent}%），已发现 {useless_count} 张无标注图片。"
+            if not self.english else
+            f"Scanning {done}/{total} ({percent}%) - {useless_count} unannotated images found so far."
+        )
 
     def _on_scan_finished(self, payload: object) -> None:
         useless: list[Path] = list(payload.get("useless", []))
