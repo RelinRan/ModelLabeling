@@ -82,6 +82,9 @@ class CleanupDialog(QDialog):
         )
         self.result_label.setMinimumHeight(100)
         self.result_label.setMaximumHeight(100)
+        # Vertical fixed so the pane never absorbs spare layout height; the
+        # section card then hugs its content (auto height).
+        self.result_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         result_card.addWidget(self.result_label)
 
         # ---- cleanup operation module ----------------------------------------
@@ -97,6 +100,7 @@ class CleanupDialog(QDialog):
             "annotations.json. Review the scan report first and back up the dataset."
         )
         self.warning_label.setWordWrap(True)
+        self.warning_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.warning_label.setStyleSheet(
             "QLabel { background: #3A2A24; border: 1px solid #8A4B3A; border-radius: 5px; "
             "padding: 8px 10px; color: #FFB08A; font-size: 12px; font-weight: 600; }"
@@ -132,6 +136,7 @@ class CleanupDialog(QDialog):
         )
         self.log_view.setMinimumHeight(100)
         self.log_view.setMaximumHeight(100)
+        self.log_view.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         cleanup_card.addWidget(self.log_view, 1)
 
         set_confirm_button(self.scan_button)  # Enter triggers scan first
