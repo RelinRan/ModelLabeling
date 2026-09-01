@@ -80,7 +80,7 @@ class CleanupDialog(QDialog):
             "border-radius: 5px; padding: 6px; font-family: Consolas, 'Courier New', monospace; "
             "font-size: 12px; }"
         )
-        self.result_label.setMinimumHeight(130)
+        self.result_label.setMinimumHeight(80)
         self.result_label.setMaximumHeight(160)
         result_card.addWidget(self.result_label)
 
@@ -130,7 +130,7 @@ class CleanupDialog(QDialog):
             "border-radius: 5px; padding: 6px; font-family: Consolas, 'Courier New', monospace; "
             "font-size: 12px; }"
         )
-        self.log_view.setMinimumHeight(130)
+        self.log_view.setMinimumHeight(80)
         self.log_view.setMaximumHeight(160)
         cleanup_card.addWidget(self.log_view, 1)
 
