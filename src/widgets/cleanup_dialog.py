@@ -4,7 +4,7 @@ import threading
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QApplication, QComboBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QComboBox, QDialog, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 from src.models.annotation import LabelPreset
 from src.services.annotation_service import AnnotationService
@@ -80,11 +80,10 @@ class CleanupDialog(QDialog):
             "border-radius: 5px; padding: 6px; font-family: Consolas, 'Courier New', monospace; "
             "font-size: 12px; }"
         )
-        self.result_label.setMinimumHeight(100)
-        self.result_label.setMaximumHeight(100)
-        # Vertical fixed so the pane never absorbs spare layout height; the
-        # section card then hugs its content (auto height).
-        self.result_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        # Fixed height so the pane never absorbs spare layout height and the
+        # card hugs its content; the layout uses 100 instead of the widget's
+        # larger sizeHint.
+        self.result_label.setFixedHeight(100)
         result_card.addWidget(self.result_label)
 
         # ---- cleanup operation module ----------------------------------------
@@ -134,12 +133,16 @@ class CleanupDialog(QDialog):
             "border-radius: 5px; padding: 6px; font-family: Consolas, 'Courier New', monospace; "
             "font-size: 12px; }"
         )
-        self.log_view.setMinimumHeight(100)
-        self.log_view.setMaximumHeight(100)
-        self.log_view.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.log_view.setFixedHeight(100)
         cleanup_card.addWidget(self.log_view)
 
         set_confirm_button(self.scan_button)  # Enter triggers scan first
+
+        # Section cards hug their content: a fixed vertical policy keeps the
+        # dialog layout from stretching any card when the window grows.
+        for frame in self.findChildren(QFrame):
+            if frame.objectName() == "sectionCard":
+                frame.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
 
         self._detect_source(default_source)
 
