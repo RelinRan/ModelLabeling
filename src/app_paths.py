@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Resource location that also works inside a PyInstaller bundle.
 
-Read-only resources (icon.png, icons/) live at the project root in a source
+Read-only resources (icon.png, icons/) live in icons/ in a source
 checkout. A frozen app unpacks them into sys._MEIPASS, so every lookup must
 go through this helper to keep icons working in the shipped binaries.
 """

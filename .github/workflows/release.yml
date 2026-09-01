@@ -65,7 +65,6 @@ jobs:
         run: >
           python -m PyInstaller --noconfirm --clean --onefile --windowed
           --name ModelLabeling
-          --add-data "icon.png${{ matrix.sep }}."
           --add-data "icons${{ matrix.sep }}icons"
           app.py
       - name: Package
@@ -77,7 +76,7 @@ jobs:
           mkdir -p staging
           cp dist/ModelLabeling* staging/
           cp -r icons staging/
-          cp icon.png README.md staging/
+          cp README.md staging/
           ASSET="ModelLabeling-${VERSION}-${{ matrix.platform }}"
           # python's zipfile works on every runner (no external zip needed)
           python -c "import shutil, sys; shutil.make_archive(sys.argv[1], 'zip', 'staging')" "${ASSET}"

@@ -21,7 +21,7 @@ def main() -> int:
         if family in families:
             app.setFont(QFont(family, 9))
             break
-    icon_path = resource_path("icon.png")
+    icon_path = resource_path("icons/icon.png")
     if icon_path.exists():
         app.setWindowIcon(QIcon(str(icon_path)))
     window = MainWindow()

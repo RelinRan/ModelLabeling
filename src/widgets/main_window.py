@@ -73,7 +73,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("ModelLabeling - Annotation Workbench")
         self.resize(1440, 900)
         from src.app_paths import resource_path
-        icon = resource_path("icon.png")
+        icon = resource_path("icons/icon.png")
         if icon.exists(): self.setWindowIcon(QIcon(str(icon)))
         self.annotation_service = AnnotationService()
         self.image_service = ImageService(self.annotation_service)
