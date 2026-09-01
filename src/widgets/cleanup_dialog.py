@@ -137,7 +137,7 @@ class CleanupDialog(QDialog):
         self.log_view.setMinimumHeight(100)
         self.log_view.setMaximumHeight(100)
         self.log_view.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        cleanup_card.addWidget(self.log_view, 1)
+        cleanup_card.addWidget(self.log_view)
 
         set_confirm_button(self.scan_button)  # Enter triggers scan first
 
