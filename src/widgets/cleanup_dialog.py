@@ -65,6 +65,22 @@ class CleanupDialog(QDialog):
         self.result_label.setMinimumHeight(50)
         layout.addWidget(self.result_label)
 
+        # ---- risk warning above the action buttons --------------------------
+        self.warning_label = QLabel(
+            "⚠ 危险操作：清理会永久删除以下文件（优先移入回收站，但无法保证恢复）：\n"
+            "无标注的图片、与之对应的标注文件、以及图片已不存在的孤立标注文件；COCO 会同时改写 annotations.json。请先确认扫描结果，建议提前备份数据集。"
+            if not self.english else
+            "⚠ Dangerous: cleanup permanently deletes unannotated images, their "
+            "annotation files, and orphan annotation files; COCO also rewrites "
+            "annotations.json. Review the scan report first and back up the dataset."
+        )
+        self.warning_label.setWordWrap(True)
+        self.warning_label.setStyleSheet(
+            "QLabel { background: #3A2A24; border: 1px solid #8A4B3A; border-radius: 5px; "
+            "padding: 8px 10px; color: #FFB08A; font-size: 12px; font-weight: 600; }"
+        )
+        layout.addWidget(self.warning_label)
+
         # ---- start cleanup + selectable log ----------------------------------
         buttons = configure_buttons(QHBoxLayout()); buttons.addStretch()
         self.cancel_button = QPushButton("取消" if not self.english else "Cancel")
