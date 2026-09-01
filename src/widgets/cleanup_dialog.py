@@ -114,10 +114,15 @@ class CleanupDialog(QDialog):
             "QPushButton:pressed { background: #2E436E; border-color: #6A84B8; } "
             "QPushButton:disabled { color: #737780; border-color: #3A3D42; background: #303236; }"
         )
-        shared_width = max(
-            self.scan_button.sizeHint().width(),
-            self.confirm_button.sizeHint().width(),
-        ) + 2
+        # Shared width = the wider of the two button texts (plus the 12px
+        # per-side QSS padding and the 1px borders), so both buttons are
+        # exactly as wide as the longest label.
+        metrics = self.confirm_button.fontMetrics()
+        text_width = max(
+            metrics.horizontalAdvance(self.scan_button.text()),
+            metrics.horizontalAdvance(self.confirm_button.text()),
+        )
+        shared_width = text_width + 2 * 12 + 2
         self.scan_button.setFixedWidth(shared_width)
         self.confirm_button.setFixedWidth(shared_width)
         buttons.addWidget(self.confirm_button)
