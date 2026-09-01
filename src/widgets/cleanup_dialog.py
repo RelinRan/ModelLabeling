@@ -4,7 +4,7 @@ import threading
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QComboBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QComboBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 from src.models.annotation import LabelPreset
 from src.services.annotation_service import AnnotationService
@@ -194,16 +194,68 @@ class CleanupDialog(QDialog):
         self.result_label.setPlainText("正在扫描…" if not self.english else "Scanning…")
         threading.Thread(target=self._scan_worker, args=(detected,), daemon=True).start()
 
+    def _image_has_annotations(self, format_name: str, image: Path, detected) -> bool:
+        """Fast format-aware check: no PIL decode, no full annotation parse.
+
+        Returns False for missing/empty/corrupt annotation files so the
+        result matches AnnotationService.load's "useless" judgement.
+        """
+        try:
+            relative = image.relative_to(detected.image_dir)
+        except ValueError:
+            return False
+        if format_name == "yolo":
+            label_file = detected.annotation_dir / relative.with_suffix(".txt")
+            if not label_file.is_file():
+                return False
+            try:
+                return any(line.strip() for line in label_file.read_text(encoding="utf-8", errors="ignore").splitlines())
+            except OSError:
+                return False
+        if format_name == "voc":
+            xml_file = detected.annotation_dir / relative.with_suffix(".xml")
+            if not xml_file.is_file():
+                return False
+            try:
+                import xml.etree.ElementTree as ET
+                root = ET.parse(xml_file).getroot()
+                for obj in root.iter("object"):
+                    bbox = obj.find("bndbox")
+                    if bbox is not None and bbox.find("xmin") is not None:
+                        return True
+                return False
+            except (OSError, ET.ParseError):
+                return False
+        if format_name == "coco":
+            # One JSON read serves every image: any annotation row for the
+            # image's basename counts as labeled. The SQLite working copy may
+            # not exist yet (dataset never opened in the main window), so
+            # fall back to annotations.json in that case.
+            if getattr(self, "_coco_annotated_names", None) is None:
+                import json as _json
+                try:
+                    store = CocoAnnotationStore(detected.annotation_dir)
+                    document = store.read_document()
+                    if not document.get("images"):
+                        json_path = AnnotationService._coco_json_path(detected.annotation_dir)
+                        if json_path and json_path.is_file():
+                            document = _json.loads(json_path.read_text(encoding="utf-8"))
+                    image_by_id = {int(item.get("id")): item for item in document.get("images", [])}
+                    annotated_ids = {int(ann.get("image_id")) for ann in document.get("annotations", [])}
+                    self._coco_annotated_names = {
+                        Path(str(image_by_id[image_id].get("file_name", ""))).name
+                        for image_id in image_by_id
+                        if image_id in annotated_ids
+                    }
+                except (OSError, ValueError):
+                    self._coco_annotated_names = set()
+            return image.name in self._coco_annotated_names
+        return False
+
     def _scan_worker(self, detected) -> None:
         """Background scan; emits progress and a finished payload."""
         format_name = detected.format_name
-        settings = type("S", (), {
-            "annotation_format": format_name,
-            "dataset_task": detected.task_name,
-            "label_presets": self.presets,
-            "image_dir": detected.image_dir,
-        })()
-        service = AnnotationService()
+        self._coco_annotated_names = None  # cache built lazily on the first image
 
         from src.services.image_service import SUPPORTED_IMAGE_EXTENSIONS
         images = sorted(path for path in detected.image_dir.rglob("*")
@@ -212,12 +264,7 @@ class CleanupDialog(QDialog):
         for index, image in enumerate(images, start=1):
             if index % 5 == 0 or index == len(images):
                 self.scan_progress.emit(index, len(images), len(useless))
-            record = type("R", (), {"path": image, "width": 0, "height": 0, "file_format": "", "file_size": 0})()
-            try:
-                result = service.load(image, detected.annotation_dir, settings)
-                if result.error or not result.annotations:
-                    useless.append(image)
-            except Exception:
+            if not self._image_has_annotations(format_name, image, detected):
                 useless.append(image)
 
         # Annotation files whose image no longer exists (keeps folders in
@@ -336,43 +383,46 @@ class CleanupDialog(QDialog):
             return
 
         source = Path(self.source_path.text().strip())
-        log: list[str] = []
         deleted = 0
+        self.log_view.clear()
+
+        def log(line: str) -> None:
+            self.log_view.appendPlainText(line)
+            QApplication.processEvents()  # stream the log while deleting
 
         # 1) unannotated images, then their mirrored annotation files
         for path in self._to_delete_images:
             if self._trash(path):
                 deleted += 1
-                log.append(f"删除图片: {path.relative_to(source)}")
+                log(f"删除图片: {path.relative_to(source)}")
             else:
-                log.append(f"失败: {path.relative_to(source)}")
+                log(f"失败: {path.relative_to(source)}")
         for path in self._to_delete_images:
             annotation_file = self._annotation_file_for(path)
             if annotation_file is not None and annotation_file.exists():
                 if self._trash(annotation_file):
                     deleted += 1
-                    log.append(f"同步删除标注: {annotation_file.relative_to(source)}")
+                    log(f"同步删除标注: {annotation_file.relative_to(source)}")
                 else:
-                    log.append(f"失败: {annotation_file.relative_to(source)}")
+                    log(f"失败: {annotation_file.relative_to(source)}")
 
         # 2) annotation files whose image is gone
         for path in self._to_delete_annotations:
             if self._trash(path):
                 deleted += 1
-                log.append(f"删除孤立标注: {path.relative_to(source)}")
+                log(f"删除孤立标注: {path.relative_to(source)}")
             else:
-                log.append(f"失败: {path.relative_to(source)}")
+                log(f"失败: {path.relative_to(source)}")
 
         # 3) COCO: drop JSON records for the removed images
         if self._format_name == "coco":
             removed = {path.name for path in self._to_delete_images}
-            before = len(log)
+            log(f"正在同步 annotations.json（{len(removed)} 张图片的记录）…")
             self._sync_coco_json(removed)
-            if len(log) == before and removed:
-                log.append(f"已从 annotations.json 移除 {len(removed)} 张图片的记录")
+            log(f"已从 annotations.json 移除 {len(removed)} 张图片的记录")
 
-        self.log_view.setPlainText("\n".join(log) if log else "未执行任何删除。")
-        self.log_view.verticalScrollBar().setValue(0)
+        if self.log_view.toPlainText() == "":
+            log("未执行任何删除。")
         AppDialog.information("提示", f"已清理 {deleted}/{count} 个文件，详见下方日志。", self)
         self.accept()
 
