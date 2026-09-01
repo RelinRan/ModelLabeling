@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QComboBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton, QVBoxLayout, QWidget
 
 from src.models.annotation import LabelPreset
@@ -25,9 +26,13 @@ class CleanupDialog(QDialog):
     For COCO the same rules apply to the JSON: image records (and their
     annotations) are removed when the image file is gone or unannotated.
 
-    Every action is logged into a read-only, selectable text area below the
-    start button so the annotator can copy the report.
+    Scanning runs on a background thread so large datasets never freeze the
+    dialog; the scan button shows live progress (xx%), and every action is
+    logged into a read-only, selectable text area below the start button.
     """
+
+    scan_progress = Signal(int, int)
+    scan_finished = Signal(object)
 
     def __init__(self, presets: list[LabelPreset], parent=None, default_source: str = "", language: str = "zh_CN") -> None:
         super().__init__(parent)
@@ -52,9 +57,11 @@ class CleanupDialog(QDialog):
         source_card.addLayout(source_form)
 
         # ---- scan + report ---------------------------------------------------
-        self.scan_button = QPushButton("扫描" if not self.english else "Scan")
-        self.scan_button.clicked.connect(self._scan)
+        self.scan_button = QPushButton("开始扫描" if not self.english else "Start Scan")
+        self.scan_button.clicked.connect(self._start_scan)
         source_card.addWidget(self.scan_button)
+        self.scan_progress.connect(self._on_scan_progress)
+        self.scan_finished.connect(self._on_scan_finished)
 
         # ---- scan result module ----------------------------------------------
         result_card = section_card(layout, "扫描结果" if not self.english else "Scan Result")
@@ -87,14 +94,13 @@ class CleanupDialog(QDialog):
         cleanup_card.addWidget(self.warning_label)
 
         buttons = configure_buttons(QHBoxLayout()); buttons.addStretch()
-        self.cancel_button = QPushButton("取消" if not self.english else "Cancel")
+        # The start-cleanup button matches the dataset card's buttons (same
+        # 30px height, width follows the text); Enter still triggers it.
         self.confirm_button = QPushButton("开始清理" if not self.english else "Start Cleanup")
         self.confirm_button.setEnabled(False)
-        self.cancel_button.clicked.connect(self.reject)
         self.confirm_button.clicked.connect(self._clean)
-        buttons.addWidget(self.cancel_button); buttons.addWidget(self.confirm_button)
-        size_buttons(self.cancel_button, self.confirm_button)
         self.confirm_button.setFixedHeight(30)
+        buttons.addWidget(self.confirm_button)
         cleanup_card.addLayout(buttons)
 
         self.log_view = QPlainTextEdit()
@@ -155,7 +161,7 @@ class CleanupDialog(QDialog):
         candidate = self._annotation_dir / relative.with_suffix(suffix)
         return candidate if candidate.is_file() else None
 
-    def _scan(self) -> None:
+    def _start_scan(self) -> None:
         source = Path(self.source_path.text().strip())
         if not source.is_dir():
             AppDialog.information("提示", "目录不存在。", self)
@@ -170,6 +176,13 @@ class CleanupDialog(QDialog):
         self._image_dir = detected.image_dir
         self._annotation_dir = detected.annotation_dir
 
+        self.scan_button.setEnabled(False)
+        self.confirm_button.setEnabled(False)
+        self.result_label.setText("正在扫描…" if not self.english else "Scanning…")
+        threading.Thread(target=self._scan_worker, args=(detected,), daemon=True).start()
+
+    def _scan_worker(self, detected) -> None:
+        """Background scan; emits progress and a finished payload."""
         format_name = detected.format_name
         settings = type("S", (), {
             "annotation_format": format_name,
@@ -179,11 +192,13 @@ class CleanupDialog(QDialog):
         })()
         service = AnnotationService()
 
-        from src.services.image_service import ImageService, SUPPORTED_IMAGE_EXTENSIONS
+        from src.services.image_service import SUPPORTED_IMAGE_EXTENSIONS
         images = sorted(path for path in detected.image_dir.rglob("*")
                         if path.is_file() and path.suffix.lower() in SUPPORTED_IMAGE_EXTENSIONS)
         useless: list[Path] = []
-        for image in images:
+        for index, image in enumerate(images, start=1):
+            if index % 5 == 0 or index == len(images):
+                self.scan_progress.emit(index, len(images))
             record = type("R", (), {"path": image, "width": 0, "height": 0, "file_format": "", "file_size": 0})()
             try:
                 result = service.load(image, detected.annotation_dir, settings)
@@ -215,20 +230,36 @@ class CleanupDialog(QDialog):
                 if not image_candidates:
                     orphans.append(annotation_file)
 
+        self.scan_finished.emit({
+            "useless": useless,
+            "orphans": orphans,
+            "total": len(images),
+        })
+
+    def _on_scan_progress(self, done: int, total: int) -> None:
+        percent = int(done / total * 100) if total else 100
+        self.scan_button.setText(f"{percent}%")
+
+    def _on_scan_finished(self, payload: object) -> None:
+        useless: list[Path] = list(payload.get("useless", []))
+        orphans: list[Path] = list(payload.get("orphans", []))
+        total: int = int(payload.get("total", 0))
         self._to_delete_images = useless
         self._to_delete_annotations = orphans
-        total = len(images)
+        self.scan_button.setEnabled(True)
+        self.scan_button.setText("开始扫描" if not self.english else "Start Scan")
+
         useful = total - len(useless)
         if useless or orphans:
             lines = [f"共 {total} 张图片，{useful} 张有有效标注。"]
             if useless:
                 lines.append(f"以下 {len(useless)} 张图片没有标注或标注为空，将连同标注文件一起删除：")
-                lines += [f"  - {p.relative_to(source)}" for p in useless[:10]]
+                lines += [f"  - {p.relative_to(self._image_dir.parent)}" for p in useless[:10]]
                 if len(useless) > 10:
                     lines.append(f"  …（其余 {len(useless) - 10} 张略）")
             if orphans:
                 lines.append(f"以下 {len(orphans)} 个标注文件对应的图片已不存在：")
-                lines += [f"  - {p.relative_to(source)}" for p in orphans[:10]]
+                lines += [f"  - {p.relative_to(self._image_dir.parent)}" for p in orphans[:10]]
                 if len(orphans) > 10:
                     lines.append(f"  …（其余 {len(orphans) - 10} 个略）")
             self.result_label.setText("\n".join(lines))
@@ -236,7 +267,12 @@ class CleanupDialog(QDialog):
             self.scan_button.setDefault(False)
             set_confirm_button(self.confirm_button)
         else:
-            self.result_label.setText(f"共 {total} 张图片，全部有有效标注，标注文件与图片一一对应，无需清理。")
+            self.result_label.setText(
+                f"共 {total} 张图片，全部有有效标注，标注文件与图片一一对应，无需清理。"
+                if not self.english else
+                f"{total} images scanned: every image has valid annotations "
+                "and every annotation file matches an existing image; nothing to clean."
+            )
             self.confirm_button.setEnabled(False)
 
     def _trash(self, path: Path) -> bool:
