@@ -50,6 +50,7 @@ class CleanupDialog(QDialog):
         source_card = section_card(layout, "数据集合" if not self.english else "Dataset")
         source_form = configure_form(QFormLayout()); source_form.setVerticalSpacing(8)
         self.source_path = QLineEdit(default_source)
+        self.source_path.textChanged.connect(self._on_source_changed)
         source_form.addRow("目录" if not self.english else "Directory", self._path_row())
         self.source_format = QComboBox()
         self.source_format.addItem("COCO", "coco"); self.source_format.addItem("YOLO", "yolo"); self.source_format.addItem("Pascal VOC", "voc")
@@ -197,10 +198,25 @@ class CleanupDialog(QDialog):
         self._image_dir = detected.image_dir
         self._annotation_dir = detected.annotation_dir
 
+        self._scanning = True
         self.scan_button.setEnabled(False)
         self.confirm_button.setEnabled(False)
         self.result_label.setPlainText("正在扫描…" if not self.english else "Scanning…")
         threading.Thread(target=self._scan_worker, args=(detected,), daemon=True).start()
+
+    def _on_source_changed(self) -> None:
+        """A new dataset directory was chosen (typed or browsed): old scan
+        results no longer apply, and the scan button must be usable again."""
+        self._scanning = False
+        self.scan_button.setEnabled(True)
+        self.confirm_button.setEnabled(False)
+        self._to_delete_images = []
+        self._to_delete_annotations = []
+        self.result_label.setPlainText(
+            "路径已更改，请重新开始扫描。" if not self.english
+            else "Directory changed; start a new scan."
+        )
+        self.log_view.clear()
 
     def _image_annotation_state(self, format_name: str, image: Path, detected) -> str:
         """Fast format-aware check: no PIL decode, no full annotation parse.
@@ -263,10 +279,19 @@ class CleanupDialog(QDialog):
         return "error"
 
     def _scan_worker(self, detected) -> None:
-        """Background scan; emits progress and a finished payload."""
+        """Background scan; emits progress and a finished payload.
+
+        Any unexpected failure still emits a finished payload so the UI
+        re-enables the scan button (the dialog never dead-ends disabled).
+        """
         format_name = detected.format_name
         self._coco_annotated_names = None  # cache built lazily on the first image
+        try:
+            self._scan_worker_inner(format_name, detected)
+        except Exception as exc:
+            self.scan_finished.emit({"error": str(exc), "total": 0})
 
+    def _scan_worker_inner(self, format_name: str, detected) -> None:
         from src.services.image_service import SUPPORTED_IMAGE_EXTENSIONS
         images = sorted(path for path in detected.image_dir.rglob("*")
                         if path.is_file() and path.suffix.lower() in SUPPORTED_IMAGE_EXTENSIONS)
@@ -320,13 +345,25 @@ class CleanupDialog(QDialog):
         )
 
     def _on_scan_finished(self, payload: object) -> None:
+        self._scanning = False
+        self.scan_button.setEnabled(True)
+        error = str(payload.get("error", "") or "")
+        if error:
+            self.result_label.setPlainText(
+                f"扫描失败：{error}\n请检查目录后重新扫描。"
+                if not self.english else
+                f"Scan failed: {error}\nCheck the directory and scan again."
+            )
+            self.confirm_button.setEnabled(False)
+            self._to_delete_images = []
+            self._to_delete_annotations = []
+            return
         useless: list[Path] = list(payload.get("useless", []))
         orphans: list[Path] = list(payload.get("orphans", []))
         total: int = int(payload.get("total", 0))
         problematic: list[Path] = list(payload.get("problematic", []))
         self._to_delete_images = useless
         self._to_delete_annotations = orphans
-        self.scan_button.setEnabled(True)
 
         useful = total - len(useless)
         if useless or orphans or problematic:
