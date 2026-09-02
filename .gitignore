@@ -21,3 +21,4 @@ test_shots/
 _*.py
 !test_annotation_flow.py
 !icons/*.png
+output/
