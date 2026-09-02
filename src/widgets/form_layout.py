@@ -46,11 +46,13 @@ def set_content_margins(layout: QLayout) -> None:
     layout.setContentsMargins(CONTENT_MARGIN, CONTENT_MARGIN, CONTENT_MARGIN, CONTENT_MARGIN)
 
 
-def section_card(parent_layout, title: str, variant: str | None = None, badge: QWidget | None = None) -> QVBoxLayout:
+def section_card(parent_layout, title: str, variant: str | None = None, badge: QWidget | None = None, badge_after_title: bool = False) -> QVBoxLayout:
     """Add a rounded section card and return its content layout.
 
     The card draws its own background, border, and accent-bar title, so
-    sibling blocks read as clearly separated panels.
+    sibling blocks read as clearly separated panels. By default the badge
+    sits at the far right of the title row; with badge_after_title it is
+    placed right after the title text.
     """
     frame = QFrame()
     frame.setObjectName("sectionCard")
@@ -68,8 +70,10 @@ def section_card(parent_layout, title: str, variant: str | None = None, badge: Q
     header.setObjectName("sectionCardTitle")
     header_row.addWidget(dot, 0, Qt.AlignmentFlag.AlignVCenter)
     header_row.addWidget(header, 0, Qt.AlignmentFlag.AlignVCenter)
+    if badge is not None and badge_after_title:
+        header_row.addWidget(badge, 0, Qt.AlignmentFlag.AlignVCenter)
     header_row.addStretch(1)
-    if badge is not None:
+    if badge is not None and not badge_after_title:
         header_row.addWidget(badge, 0, Qt.AlignmentFlag.AlignVCenter)
     outer.addLayout(header_row)
     content = QVBoxLayout()

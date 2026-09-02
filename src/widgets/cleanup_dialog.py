@@ -88,17 +88,19 @@ class CleanupDialog(QDialog):
         result_card.addWidget(self.result_label)
 
         # ---- cleanup operation module ----------------------------------------
-        # The risk warning sits at the far right of the section title row.
+        # The risk warning follows the section title directly.
         self.warning_label = QLabel(
-            "⚠ 危险操作：删除不可恢复，请先备份数据集。"
-            if not self.english else
-            "⚠ Destructive: deletions are permanent; back up the dataset first."
+            "删除不可恢复，请先备份数据" if not self.english
+            else "Deletions are permanent; back up the dataset first"
         )
         self.warning_label.setStyleSheet(
             "QLabel { background: transparent; border: none; color: #FFB08A; "
             "font-size: 12px; font-weight: 600; }"
         )
-        cleanup_card = section_card(layout, "清理操作" if not self.english else "Cleanup", badge=self.warning_label)
+        cleanup_card = section_card(
+            layout, "清理操作" if not self.english else "Cleanup",
+            badge=self.warning_label, badge_after_title=True,
+        )
 
         buttons = configure_buttons(QHBoxLayout())
         # The start-cleanup button keeps the start-scan button's height and
@@ -344,6 +346,27 @@ class CleanupDialog(QDialog):
     def _on_scan_finished(self, payload: object) -> None:
         self._scanning = False
         self.scan_button.setEnabled(True)
+        try:
+            self._apply_scan_report(payload)
+        except Exception as exc:
+            # Never leave the dialog dead-ended: report and re-enable.
+            self.confirm_button.setEnabled(False)
+            self._to_delete_images = []
+            self._to_delete_annotations = []
+            self.result_label.setPlainText(
+                f"扫描汇总失败：{exc}\n请重新扫描。"
+                if not self.english else
+                f"Scan summary failed: {exc}\nScan again."
+            )
+
+    def _rel(self, path: Path) -> str:
+        """Path relative to the dataset root; falls back to the file name."""
+        try:
+            return str(path.relative_to(self._image_dir.parent))
+        except ValueError:
+            return path.name
+
+    def _apply_scan_report(self, payload: object) -> None:
         error = str(payload.get("error", "") or "")
         if error:
             self.result_label.setPlainText(
@@ -367,17 +390,17 @@ class CleanupDialog(QDialog):
             lines = [f"共 {total} 张图片，{useful} 张有有效标注。"]
             if useless:
                 lines.append(f"以下 {len(useless)} 张图片没有标注或标注为空，将连同标注文件一起删除：")
-                lines += [f"  - {p.relative_to(self._image_dir.parent)}" for p in useless[:10]]
+                lines += [f"  - {self._rel(p)}" for p in useless[:10]]
                 if len(useless) > 10:
                     lines.append(f"  …（其余 {len(useless) - 10} 张略）")
             if orphans:
                 lines.append(f"以下 {len(orphans)} 个标注文件对应的图片已不存在：")
-                lines += [f"  - {p.relative_to(self._image_dir.parent)}" for p in orphans[:10]]
+                lines += [f"  - {self._rel(p)}" for p in orphans[:10]]
                 if len(orphans) > 10:
                     lines.append(f"  …（其余 {len(orphans) - 10} 个略）")
             if problematic:
                 lines.append(f"以下 {len(problematic)} 个文件存在问题（标注文件无法读取/解析），不会删除，请人工检查：")
-                lines += [f"  - {p.relative_to(self._image_dir.parent)}" for p in problematic[:10]]
+                lines += [f"  - {self._rel(p)}" for p in problematic[:10]]
                 if len(problematic) > 10:
                     lines.append(f"  …（其余 {len(problematic) - 10} 个略）")
             self.result_label.setPlainText("\n".join(lines))
