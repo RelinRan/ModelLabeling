@@ -306,26 +306,17 @@ class CleanupDialog(QDialog):
                 problematic.append(image)
 
         # Annotation files whose image no longer exists (keeps folders in
-        # sync when images were deleted outside the app).
+        # sync when images were deleted outside the app). Image names are
+        # indexed once so the orphan check is O(1) per file instead of
+        # re-walking the whole image tree for every annotation file.
         orphans: list[Path] = []
         if format_name in ("yolo", "voc"):
+            image_stems = {path.name.rsplit(".", 1)[0].lower() for path in images}
             suffix = ".txt" if format_name == "yolo" else ".xml"
             for annotation_file in sorted(detected.annotation_dir.rglob(f"*{suffix}")):
                 if format_name == "yolo" and annotation_file.name == "classes.txt":
                     continue
-                try:
-                    relative = annotation_file.relative_to(detected.annotation_dir)
-                except ValueError:
-                    continue
-                # Path.glob with ".*" hits a pathlib parse bug on Windows;
-                # match by stem over the image tree instead.
-                image_candidates = [
-                    p for p in detected.image_dir.rglob("*")
-                    if p.is_file()
-                    and p.suffix.lower() in SUPPORTED_IMAGE_EXTENSIONS
-                    and p.name.lower().startswith(relative.stem.lower() + ".")
-                ]
-                if not image_candidates:
+                if annotation_file.stem.lower() not in image_stems:
                     orphans.append(annotation_file)
 
         self.scan_finished.emit({
