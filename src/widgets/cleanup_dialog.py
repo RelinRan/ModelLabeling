@@ -90,8 +90,8 @@ class CleanupDialog(QDialog):
         # ---- cleanup operation module ----------------------------------------
         # The risk warning follows the section title directly.
         self.warning_label = QLabel(
-            "删除不可恢复，请先备份数据" if not self.english
-            else "Deletions are permanent; back up the dataset first"
+            "-[删除不可恢复，请先备份数据]" if not self.english
+            else "-[Deletions are permanent; back up the dataset first]"
         )
         self.warning_label.setStyleSheet(
             "QLabel { background: transparent; border: none; color: #FFB08A; "
