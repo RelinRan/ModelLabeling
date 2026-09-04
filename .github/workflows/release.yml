@@ -67,7 +67,9 @@ jobs:
         run: |
           set -e
           VERSION="${GITHUB_REF_NAME#v}"
-          [ "$VERSION" = "${GITHUB_REF_NAME}" ] && VERSION="dev-${GITHUB_RUN_NUMBER}"
+          if [ -z "$VERSION" ] || [ "$VERSION" = "$GITHUB_REF_NAME" ]; then
+            VERSION="dev-${GITHUB_RUN_NUMBER}"
+          fi
           mkdir -p staging
           cp dist/ModelLabeling* staging/
           cp -r icons staging/
