@@ -27,7 +27,19 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgl1 libegl1 libxkbcommon0 libxkbcommon-x11-0 libdbus-1-3 libxcb-cursor0
       - run: pip install -r requirements.txt
-      - run: python -m pytest tests -q
+      - name: Run unit tests
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest tests -q 2>&1 | tee pytest.log
+          code=${PIPESTATUS[0]}
+          if [ "$code" -ne 0 ]; then
+            # surface failures as public annotations (logs need a login)
+            grep -E "^(FAILED|ERROR)" pytest.log | head -20 | while IFS= read -r line; do
+              echo "::error::${line}"
+            done
+          fi
+          exit "$code"
 
   build:
     name: build ${{ matrix.platform }}
