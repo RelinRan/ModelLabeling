@@ -215,7 +215,7 @@ class DatasetIndexRepository:
             if not page:
                 return
             yield page
-            last_key = page[-1].file_name.casefold()
+            last_key = page[-1].relative_path.casefold()
             last_id = page[-1].id
 
     def position(self, path: Path) -> int:
@@ -235,7 +235,7 @@ class DatasetIndexRepository:
         values = [
             (item.id or None, str(item.path), item.relative_path, item.file_name, item.file_size,
              item.mtime_ns, item.width, item.height, str(item.annotation_path) if item.annotation_path else None,
-            item.annotation_status, item.file_name.casefold(), item.annotation_size, item.annotation_mtime_ns)
+            item.annotation_status, item.relative_path.casefold(), item.annotation_size, item.annotation_mtime_ns)
             for item in batch
         ]
         if not values:
@@ -245,7 +245,7 @@ class DatasetIndexRepository:
                 "INSERT INTO images(id,path,relative_path,file_name,file_size,mtime_ns,width,height,annotation_path,annotation_status,sort_key,annotation_size,annotation_mtime_ns) "
                 "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET "
                 "relative_path=excluded.relative_path,file_name=excluded.file_name,file_size=excluded.file_size,mtime_ns=excluded.mtime_ns,"
-                "annotation_path=excluded.annotation_path,annotation_status=excluded.annotation_status,"
+                "annotation_path=excluded.annotation_path,annotation_status=excluded.annotation_status,sort_key=excluded.sort_key,"
                 "annotation_size=excluded.annotation_size,annotation_mtime_ns=excluded.annotation_mtime_ns",
                 values,
             )
