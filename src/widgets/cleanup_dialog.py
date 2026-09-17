@@ -43,6 +43,9 @@ class CleanupDialog(QDialog):
         self._to_delete_images: list[Path] = []
         self._to_delete_annotations: list[Path] = []
         self._format_name = ""
+        # Scan totals feed the post-cleanup summary line.
+        self._scan_total = 0
+        self._scan_useful = 0
 
         layout = QVBoxLayout(self); set_content_margins(layout); layout.setSpacing(10)
 
@@ -200,7 +203,7 @@ class CleanupDialog(QDialog):
         self._scanning = True
         self.scan_button.setEnabled(False)
         self.confirm_button.setEnabled(False)
-        self.result_label.setPlainText("正在扫描…" if not self.english else "Scanning…")
+        self.result_label.setPlainText("[扫描] …" if not self.english else "[Scan] …")
         threading.Thread(target=self._scan_worker, args=(detected,), daemon=True).start()
 
     def _on_source_changed(self) -> None:
@@ -211,6 +214,7 @@ class CleanupDialog(QDialog):
         self.confirm_button.setEnabled(False)
         self._to_delete_images = []
         self._to_delete_annotations = []
+        self._scan_total = self._scan_useful = 0
         self.result_label.setPlainText(
             "路径已更改，请重新开始扫描。" if not self.english
             else "Directory changed; start a new scan."
@@ -296,6 +300,7 @@ class CleanupDialog(QDialog):
                         if path.is_file() and path.suffix.lower() in SUPPORTED_IMAGE_EXTENSIONS)
         useless: list[Path] = []
         problematic: list[Path] = []
+        self.scan_progress.emit(0, len(images), 0)
         for index, image in enumerate(images, start=1):
             if index % 5 == 0 or index == len(images):
                 self.scan_progress.emit(index, len(images), len(useless))
@@ -329,10 +334,16 @@ class CleanupDialog(QDialog):
     def _on_scan_progress(self, done: int, total: int, useless_count: int) -> None:
         percent = int(done / total * 100) if total else 100
         self.result_label.setPlainText(
-            f"正在扫描 {done}/{total}（{percent}%），已发现 {useless_count} 张无标注图片。"
+            f"[扫描] {done}/{total}  {percent}%"
             if not self.english else
-            f"Scanning {done}/{total} ({percent}%) - {useless_count} unannotated images found so far."
+            f"[Scan] {done}/{total}  {percent}%"
         )
+
+    def _summary_line(self, total: int, useful: int, useless: int) -> str:
+        """Shared one-line report used by both the scan and cleanup logs."""
+        if self.english:
+            return f"[Total]: {total}  [Annotated]: {useful}  [Unannotated]: {useless}"
+        return f"[总图片]：{total}张  [有效标注]：{useful}张  [无标注]：{useless}张"
 
     def _on_scan_finished(self, payload: object) -> None:
         self._scanning = False
@@ -345,25 +356,18 @@ class CleanupDialog(QDialog):
             self._to_delete_images = []
             self._to_delete_annotations = []
             self.result_label.setPlainText(
-                f"扫描汇总失败：{exc}\n请重新扫描。"
+                f"[扫描失败] {exc}\n请重新扫描。"
                 if not self.english else
-                f"Scan summary failed: {exc}\nScan again."
+                f"[Scan failed] {exc}\nScan again."
             )
-
-    def _rel(self, path: Path) -> str:
-        """Path relative to the dataset root; falls back to the file name."""
-        try:
-            return str(path.relative_to(self._image_dir.parent))
-        except ValueError:
-            return path.name
 
     def _apply_scan_report(self, payload: object) -> None:
         error = str(payload.get("error", "") or "")
         if error:
             self.result_label.setPlainText(
-                f"扫描失败：{error}\n请检查目录后重新扫描。"
+                f"[扫描失败] {error}\n请检查目录后重新扫描。"
                 if not self.english else
-                f"Scan failed: {error}\nCheck the directory and scan again."
+                f"[Scan failed] {error}\nCheck the directory and scan again."
             )
             self.confirm_button.setEnabled(False)
             self._to_delete_images = []
@@ -375,38 +379,22 @@ class CleanupDialog(QDialog):
         problematic: list[Path] = list(payload.get("problematic", []))
         self._to_delete_images = useless
         self._to_delete_annotations = orphans
+        self._scan_total, self._scan_useful = total, total - len(useless)
 
-        useful = total - len(useless)
-        if useless or orphans or problematic:
-            lines = [f"共 {total} 张图片，{useful} 张有有效标注。"]
-            if useless:
-                lines.append(f"以下 {len(useless)} 张图片没有标注或标注为空，将连同标注文件一起删除：")
-                lines += [f"  - {self._rel(p)}" for p in useless[:10]]
-                if len(useless) > 10:
-                    lines.append(f"  …（其余 {len(useless) - 10} 张略）")
-            if orphans:
-                lines.append(f"以下 {len(orphans)} 个标注文件对应的图片已不存在：")
-                lines += [f"  - {self._rel(p)}" for p in orphans[:10]]
-                if len(orphans) > 10:
-                    lines.append(f"  …（其余 {len(orphans) - 10} 个略）")
-            if problematic:
-                lines.append(f"以下 {len(problematic)} 个文件存在问题（标注文件无法读取/解析），不会删除，请人工检查：")
-                lines += [f"  - {self._rel(p)}" for p in problematic[:10]]
-                if len(problematic) > 10:
-                    lines.append(f"  …（其余 {len(problematic) - 10} 个略）")
-            self.result_label.setPlainText("\n".join(lines))
-            self.confirm_button.setEnabled(bool(useless or orphans))
-            self.scan_button.setDefault(False)
-            if useless or orphans:
-                set_confirm_button(self.confirm_button)
-        else:
-            self.result_label.setPlainText(
-                f"共 {total} 张图片，全部有有效标注，标注文件与图片一一对应，无需清理。"
-                if not self.english else
-                f"{total} images scanned: every image has valid annotations "
-                "and every annotation file matches an existing image; nothing to clean."
-            )
-            self.confirm_button.setEnabled(False)
+        # Summary line first, then one tagged line per file so the report can
+        # be checked verbatim against the folder.
+        summary = self._summary_line(total, self._scan_useful, len(useless))
+        if not (useless or orphans or problematic):
+            summary += "  [无需清理]" if not self.english else "  [Nothing to clean]"
+        lines = [summary]
+        lines += [f"[无标注] {p.name}" for p in useless]
+        lines += [f"[孤立标注] {p.name}" for p in orphans]
+        lines += [f"[异常] {p.name}" for p in problematic]
+        self.result_label.setPlainText("\n".join(lines))
+        self.confirm_button.setEnabled(bool(useless or orphans))
+        self.scan_button.setDefault(False)
+        if useless or orphans:
+            set_confirm_button(self.confirm_button)
 
     def _trash(self, path: Path) -> bool:
         """Recycle bin first, plain unlink as fallback; returns success."""
@@ -448,52 +436,68 @@ class CleanupDialog(QDialog):
     def _clean(self) -> None:
         if not (self._to_delete_images or self._to_delete_annotations):
             return
-        count = len(self._to_delete_images) + len(self._to_delete_annotations)
-        if not AppDialog.question("提示", f"确认清理 {count} 个文件？此操作不可恢复。", self):
-            return
-
-        source = Path(self.source_path.text().strip())
-        deleted = 0
-        self.log_view.clear()
-
-        def log(line: str) -> None:
-            self.log_view.appendPlainText(line)
-            QApplication.processEvents()  # stream the log while deleting
-
-        # 1) unannotated images, then their mirrored annotation files
-        for path in self._to_delete_images:
-            if self._trash(path):
-                deleted += 1
-                log(f"删除图片: {path.relative_to(source)}")
-            else:
-                log(f"失败: {path.relative_to(source)}")
+        # The plan lists every file the cleanup will touch, so the progress
+        # counter's denominator matches the files the user sees deleted:
+        # unannotated images, their mirrored annotation files, then orphans.
+        plan: list[Path] = list(self._to_delete_images)
         for path in self._to_delete_images:
             annotation_file = self._annotation_file_for(path)
             if annotation_file is not None and annotation_file.exists():
-                if self._trash(annotation_file):
-                    deleted += 1
-                    log(f"同步删除标注: {annotation_file.relative_to(source)}")
-                else:
-                    log(f"失败: {annotation_file.relative_to(source)}")
+                plan.append(annotation_file)
+        plan += self._to_delete_annotations
+        total = len(plan)
+        if not AppDialog.question("提示", f"确认清理 {total} 个文件？此操作不可恢复。", self):
+            return
 
-        # 2) annotation files whose image is gone
-        for path in self._to_delete_annotations:
-            if self._trash(path):
-                deleted += 1
-                log(f"删除孤立标注: {path.relative_to(source)}")
-            else:
-                log(f"失败: {path.relative_to(source)}")
+        self.confirm_button.setEnabled(False)
+        self.log_view.clear()
 
-        # 3) COCO: drop JSON records for the removed images
+        def progress(done: int) -> None:
+            percent = int(done / total * 100) if total else 100
+            self.log_view.setPlainText(
+                f"[清理] {done}/{total}  {percent}%"
+                if not self.english else
+                f"[Clean] {done}/{total}  {percent}%"
+            )
+            QApplication.processEvents()  # keep the progress line live
+
+        progress(0)
+        cleaned: list[Path] = []
+        failed: list[Path] = []
+        for done, path in enumerate(plan, start=1):
+            (cleaned if self._trash(path) else failed).append(path)
+            if done % 5 == 0 or done == total:
+                progress(done)
+
+        # COCO: drop JSON records for the removed images
+        synced_note = ""
         if self._format_name == "coco":
             removed = {path.name for path in self._to_delete_images}
-            log(f"正在同步 annotations.json（{len(removed)} 张图片的记录）…")
             self._sync_coco_json(removed)
-            log(f"已从 annotations.json 移除 {len(removed)} 张图片的记录")
+            synced_note = (
+                f"[已同步] annotations.json（移除 {len(removed)} 张图片的记录）"
+                if not self.english else
+                f"[Synced] annotations.json (removed records for {len(removed)} images)"
+            )
 
-        if self.log_view.toPlainText() == "":
-            log("未执行任何删除。")
-        AppDialog.information("提示", f"已清理 {deleted}/{count} 个文件，详见下方日志。", self)
+        # Post-cleanup summary: unannotated images that failed to delete are
+        # the only ones left, so they keep the [无标注] count nonzero.
+        unannotated = set(self._to_delete_images)
+        leftover = sum(1 for path in failed if path in unannotated)
+        remaining_total = self._scan_total - (len(self._to_delete_images) - leftover)
+        summary = self._summary_line(remaining_total, self._scan_useful, leftover)
+        lines = [summary]
+        lines += [f"[已清理] {path.name}" for path in cleaned]
+        lines += [f"[失败] {path.name}" for path in failed]
+        if synced_note:
+            lines.append(synced_note)
+        lines.append(
+            f"[清理完成]  {summary}"
+            if not self.english else
+            f"[Done]  {summary}"
+        )
+        self.log_view.setPlainText("\n".join(lines))
+        AppDialog.information("提示", f"已清理 {len(cleaned)}/{total} 个文件，详见下方日志。", self)
         self.accept()
 
     @property
