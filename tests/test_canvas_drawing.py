@@ -72,6 +72,36 @@ def test_multipart_polygon_renders_and_secondary_part_is_selectable():
     view.close()
 
 
+def test_loading_an_image_selects_the_first_box():
+    app = QApplication.instance() or QApplication([])
+    boxes = [
+        Annotation(ShapeType.RECTANGLE, "person", [QPointF(20, 20), QPointF(80, 80)]),
+        Annotation(ShapeType.RECTANGLE, "dog", [QPointF(120, 120), QPointF(180, 180)]),
+    ]
+    view = CanvasView()
+    view.resize(800, 600)
+    view.show()
+
+    # Selecting a box, then switching images keeps a box selected; with
+    # several boxes present the first one is the default selection.
+    view.load_image(QImage(640, 480, QImage.Format.Format_RGB32), boxes)
+    app.processEvents()
+    assert view.selected_annotation is boxes[0]
+    assert [item.isSelected() for item in view.annotation_items] == [True, False]
+
+    # Reloading with the same annotations (e.g. metadata arriving) keeps it.
+    view.load_image(QImage(640, 480, QImage.Format.Format_RGB32), boxes)
+    app.processEvents()
+    assert view.selected_annotation is boxes[0]
+
+    # An image without annotations leaves nothing selected.
+    view.load_image(QImage(640, 480, QImage.Format.Format_RGB32), [])
+    app.processEvents()
+    assert view.selected_annotation is None
+
+    view.close()
+
+
 def test_custom_keypoint_schema_finishes_after_configured_point_count():
     app = QApplication.instance() or QApplication([])
     view = CanvasView()

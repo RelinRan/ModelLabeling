@@ -609,7 +609,11 @@ class CanvasView(QGraphicsView):
         self._update_label_overlay()
         self.zoom_tools.show()
         self.zoom_tools.raise_()
-        self.annotationSelected.emit(None)
+        # Switching images keeps a box selected; with several boxes the first
+        # one is selected by default.
+        if self.annotation_items:
+            self.annotation_items[0].setSelected(True)
+        self.annotationSelected.emit(self.selected_annotation)
         self.dirtyChanged.emit(False)
 
     def set_image_info(self, name: str, position: int, total: int, file_format: str = "", file_size: int = 0) -> None:
