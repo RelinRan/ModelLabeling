@@ -155,6 +155,16 @@ class DatasetScanWorker(QObject):
                     self.progress.emit(indexed, self.total_count)
             if self.cancelled:
                 return
+            # The file counter runs independently from the index writer. On
+            # a busy/slow runner it can finish first, so verify that the
+            # SQLite index contains the same number of physical images before
+            # declaring the scan complete. A second pass repairs a transient
+            # short page instead of exposing a count of N with only N-1 rows.
+            if self.total_count and repository.count() != self.total_count:
+                for batch in repository.scan_paths(lambda: self.cancelled, self.INDEX_BATCH_SIZE, [p.name for p in presets]):
+                    if self.cancelled:
+                        return
+                    repository.upsert_batch(batch)
             repository.prune_missing(lambda: self.cancelled); total = repository.count(); repository.set_complete(True)
             self.progress.emit(total, total); self.finished.emit(DatasetScanResult([], presets, total, True, self.session_id))
         except Exception as exc:
