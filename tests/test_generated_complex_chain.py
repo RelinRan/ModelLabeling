@@ -424,7 +424,14 @@ def test_generated_paged_dataset_edit_filter_reset_reload_keeps_file_identity(tm
         assert window.image_panel.list_model.canFetchMore()
 
         window.image_panel.list_model.fetchMore()
-        assert _wait(app, lambda: len(window.image_panel.records) == 103)
+        assert _wait(app, lambda: len(window.image_panel.records) == 103), (
+            f"records={len(window.image_panel.records)} "
+            f"model={len(window.image_panel.list_model.records)} "
+            f"total={window.image_panel.list_model._total_count} "
+            f"can_fetch={window.image_panel.list_model.canFetchMore()} "
+            f"repo_count={window.dataset_index_repository.count() if window.dataset_index_repository else None} "
+            f"page={len(window.dataset_index_repository.get_page(100, 100)) if window.dataset_index_repository else None}"
+        )
         assert len({record.path for record in window.state.images}) == 103
 
         _select(window, app, "img_0102.jpg")
