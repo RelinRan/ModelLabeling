@@ -1,6 +1,6 @@
 name: release
 
-# Builds desktop clients for Windows / Linux / macOS and publishes them as a
+# Builds desktop clients for Windows / Linux and publishes them as a
 # GitHub Release. Push a version tag (v1.2.0) to ship; a manual run only
 # builds and uploads the artifacts to the workflow run.
 on:
