@@ -4,7 +4,7 @@
 
 Windows 优先的 Python/PySide6 桌面图像标注工作台。面向 YOLO / Pascal VOC / COCO 数据集的快速标注、管理与转换，覆盖 Ultralytics 官方全部四种标注文件任务（检测、分割、关键点、旋转框），内置大数据集索引、新建数据集向导与 ONNX 自动标注。
 
-- 版本：v1.1.7
+- 版本：v1.1.8
 - 作者：RelinRan · [GitHub](https://github.com/RelinRan) · relinran@foxmail.com
 
 ---

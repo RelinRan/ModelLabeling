@@ -73,7 +73,7 @@ class ImageFileModel(QAbstractListModel):
         # If the count is already visible but the final page has not become
         # readable yet, retry asynchronously instead of permanently leaving
         # the list at the first page.
-        if self._fetch_retry_count >= 20:
+        if self._fetch_retry_count >= 120:
             self._fetch_retry_count = 0
             return
         self._fetch_retry_count += 1
