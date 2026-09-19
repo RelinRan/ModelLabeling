@@ -419,27 +419,13 @@ def test_generated_paged_dataset_edit_filter_reset_reload_keeps_file_identity(tm
     cache_files = []
     try:
         _open(window, app, source)
-        assert window.dataset_total_images == 103, (
-            f"initial total={window.dataset_total_images} "
-            f"records={len(window.image_panel.records)} "
-            f"repo_count={window.dataset_index_repository.count() if window.dataset_index_repository else None}"
-        )
+        assert window.dataset_total_images == 103
         assert len(window.image_panel.records) == 100
         assert window.image_panel.list_model.canFetchMore()
 
         window.image_panel.list_model.fetchMore()
-        assert _wait(app, lambda: len(window.image_panel.records) == 103), (
-            f"records={len(window.image_panel.records)} "
-            f"model={len(window.image_panel.list_model.records)} "
-            f"total={window.image_panel.list_model._total_count} "
-            f"can_fetch={window.image_panel.list_model.canFetchMore()} "
-            f"repo_count={window.dataset_index_repository.count() if window.dataset_index_repository else None} "
-            f"page={len(window.dataset_index_repository.get_page(100, 100)) if window.dataset_index_repository else None}"
-        )
-        assert len({record.path for record in window.state.images}) == 103, (
-            f"state images={len(window.state.images)} "
-            f"visible={len(window.image_panel.records)}"
-        )
+        assert _wait(app, lambda: len(window.image_panel.records) == 103)
+        assert len({record.path for record in window.state.images}) == 103
 
         _select(window, app, "img_0102.jpg")
         window.canvas.annotation_items[0].setSelected(True)
@@ -462,14 +448,7 @@ def test_generated_paged_dataset_edit_filter_reset_reload_keeps_file_identity(tm
         window._reload_cleaned_dataset(source)
         assert _wait(app, lambda: window._dataset_scan_completed and window._dataset_thread is None)
         window.image_panel.list_model.fetchMore()
-        assert _wait(app, lambda: len(window.image_panel.records) == 103), (
-            f"reload records={len(window.image_panel.records)} "
-            f"model={len(window.image_panel.list_model.records)} "
-            f"total={window.image_panel.list_model._total_count} "
-            f"can_fetch={window.image_panel.list_model.canFetchMore()} "
-            f"repo_count={window.dataset_index_repository.count() if window.dataset_index_repository else None} "
-            f"page={len(window.dataset_index_repository.get_page(100, 100)) if window.dataset_index_repository else None}"
-        )
+        assert _wait(app, lambda: len(window.image_panel.records) == 103)
         _select(window, app, "img_0102.jpg")
         assert [item.label for item in window.canvas.annotations] == ["car", "person"]
         _select(window, app, "img_0001.jpg")

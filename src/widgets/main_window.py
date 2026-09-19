@@ -787,7 +787,7 @@ class MainWindow(QMainWindow):
 
     def _image_records_fetched(self, records: list[ImageRecord]) -> None:
         """Keep the main state in sync with rows loaded by the paged list."""
-        if self.dataset_index_repository is None or not records:
+        if not records:
             return
         known = {str(item.path) for item in self.state.images}
         self.state.images.extend(item for item in records if str(item.path) not in known)
