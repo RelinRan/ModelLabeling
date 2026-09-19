@@ -623,7 +623,7 @@ class MainWindow(QMainWindow):
                 self._record_from_index(item)
                 for item in self.dataset_index_repository.get_page(offset, limit, query, status, label)
             ]
-            page = loader(0, 500)
+            page = loader(0, 100)
             filtered_total = self.dataset_index_repository.count(query, status, label)
             # Filtering is a view operation. Replacing state.images with the
             # filtered page changes current_index to a different physical

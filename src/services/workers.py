@@ -114,7 +114,7 @@ class DatasetScanWorker(QObject):
     # Keep worker batches aligned with the responsive 500-row UI preload.
     # Indexing and annotation persistence are path-based and independent;
     # only progress/partial signals cross back to the UI thread.
-    INDEX_BATCH_SIZE = 500
+    INDEX_BATCH_SIZE = 100
     PROGRESS_STEP = 100
 
     progress = Signal(int, int)

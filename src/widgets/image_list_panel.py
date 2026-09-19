@@ -18,7 +18,7 @@ class ImageFileModel(QAbstractListModel):
         self._total_count = 0
         # Keep the initial/list fetch responsive. Index scanning itself runs
         # independently in the worker.
-        self._page_size = 500
+        self._page_size = 100
 
     @staticmethod
     def _text(record: ImageRecord) -> str:

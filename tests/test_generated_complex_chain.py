@@ -394,7 +394,7 @@ def test_generated_dirty_edit_is_saved_before_history_dataset_switch(tmp_path, m
 
 
 def test_generated_paged_dataset_edit_filter_reset_reload_keeps_file_identity(tmp_path, monkeypatch):
-    """Exercise the >500-row index page boundary with edit/save/filter/reload chaining."""
+    """Exercise the >100-row index page boundary with edit/save/filter/reload chaining."""
     app = QApplication.instance() or QApplication([])
     settings_ini = tmp_path / "settings.ini"
     monkeypatch.setattr(
@@ -408,7 +408,7 @@ def test_generated_paged_dataset_edit_filter_reset_reload_keeps_file_identity(tm
     (source / "images").mkdir(parents=True)
     (source / "labels").mkdir()
     (source / "classes.txt").write_text("person\ncar\n", encoding="utf-8")
-    for index in range(503):
+    for index in range(103):
         stem = f"img_{index:04d}"
         Image.new("RGB", (200, 140), (index % 251, 80, 120)).save(source / "images" / f"{stem}.jpg", "JPEG")
         (source / "labels" / f"{stem}.txt").write_text(
@@ -419,15 +419,15 @@ def test_generated_paged_dataset_edit_filter_reset_reload_keeps_file_identity(tm
     cache_files = []
     try:
         _open(window, app, source)
-        assert window.dataset_total_images == 503
-        assert len(window.image_panel.records) == 500
+        assert window.dataset_total_images == 103
+        assert len(window.image_panel.records) == 100
         assert window.image_panel.list_model.canFetchMore()
 
         window.image_panel.list_model.fetchMore()
-        assert _wait(app, lambda: len(window.image_panel.records) == 503)
-        assert len({record.path for record in window.state.images}) == 503
+        assert _wait(app, lambda: len(window.image_panel.records) == 103)
+        assert len({record.path for record in window.state.images}) == 103
 
-        _select(window, app, "img_0502.jpg")
+        _select(window, app, "img_0102.jpg")
         window.canvas.annotation_items[0].setSelected(True)
         assert window.canvas.update_selected_label("car", "#ffcc00")
         _add_box(window, "person", 2, 3)
@@ -436,11 +436,11 @@ def test_generated_paged_dataset_edit_filter_reset_reload_keeps_file_identity(tm
 
         # Filtering to another file and clearing the filter must not use the
         # filtered row index to replace/switch the canonical current image.
-        window.image_panel.search.setText("img_0502")
+        window.image_panel.search.setText("img_0102")
         assert _wait(app, lambda: len(window.image_panel.records) == 1)
         assert _relative(window, window.state.current_image.path) == "img_0001.jpg"
         window.image_panel.search.clear()
-        assert _wait(app, lambda: len(window.image_panel.records) == 500)
+        assert _wait(app, lambda: len(window.image_panel.records) == 100)
         assert _relative(window, window.state.current_image.path) == "img_0001.jpg"
 
         # Reopen from disk, cross the page boundary again, and verify only the
@@ -448,8 +448,8 @@ def test_generated_paged_dataset_edit_filter_reset_reload_keeps_file_identity(tm
         window._reload_cleaned_dataset(source)
         assert _wait(app, lambda: window._dataset_scan_completed and window._dataset_thread is None)
         window.image_panel.list_model.fetchMore()
-        assert _wait(app, lambda: len(window.image_panel.records) == 503)
-        _select(window, app, "img_0502.jpg")
+        assert _wait(app, lambda: len(window.image_panel.records) == 103)
+        _select(window, app, "img_0102.jpg")
         assert [item.label for item in window.canvas.annotations] == ["car", "person"]
         _select(window, app, "img_0001.jpg")
         assert [item.label for item in window.canvas.annotations] == ["person"]
