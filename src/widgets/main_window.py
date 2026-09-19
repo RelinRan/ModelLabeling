@@ -1388,7 +1388,11 @@ class MainWindow(QMainWindow):
             return
         records = result.records
         if result.total_images:
-            self.dataset_total_images = result.total_images
+            # A cached-index partial can report the previous row count while
+            # the independent filesystem counter or the final scan already
+            # knows a larger total. Never let an early partial regress the
+            # real dataset total.
+            self.dataset_total_images = max(self.dataset_total_images, int(result.total_images))
         if result.presets:
             self.dataset_parser_presets = list(result.presets)
         current_path = self.state.current_image.path if self.state.current_image else None
@@ -1429,7 +1433,13 @@ class MainWindow(QMainWindow):
         if isinstance(records, DatasetScanResult):
             scan_result = records
             if scan_result.total_images:
-                self.dataset_total_images = scan_result.total_images
+                self.dataset_total_images = max(self.dataset_total_images, int(scan_result.total_images))
+        # The completed SQLite index is authoritative for the final UI total.
+        # This avoids exposing the cached first-page count after a rescan.
+        if self.dataset_index_repository is not None:
+            indexed_total = self.dataset_index_repository.count()
+            if indexed_total:
+                self.dataset_total_images = max(self.dataset_total_images, indexed_total)
             if scan_result.append_only:
                 append_only_result = True
                 records = self.state.images
