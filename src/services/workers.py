@@ -386,7 +386,10 @@ class DatasetAnnotationSaveWorker(QObject):
                 # classes.txt is the authoritative class-id mapping for YOLO
                 # label files; bootstrap it for datasets that have none yet.
                 classes_path = self.image_dir.parent / "classes.txt"
-                classes_path.write_text("\n".join(preset.name for preset in self.settings.label_presets) + "\n", encoding="utf-8")
+                AnnotationService._atomic_write_text(
+                    classes_path,
+                    "\n".join(preset.name for preset in self.settings.label_presets) + "\n",
+                )
             self.finished.emit("" if result.ok else (result.error or "保存标注失败"))
         except Exception as exc:
             self.finished.emit(str(exc))

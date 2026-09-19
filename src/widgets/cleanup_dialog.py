@@ -256,11 +256,10 @@ class CleanupDialog(QDialog):
             except (OSError, ET.ParseError):
                 return "error"
         if format_name == "coco":
-            # One JSON read serves every image: any annotation row for the
-            # image's basename counts as labeled. The SQLite working copy may
-            # not exist yet (dataset never opened in the main window), so
-            # fall back to annotations.json in that case.
-            if getattr(self, "_coco_annotated_names", None) is None:
+            # COCO file_name may contain a relative directory. Basename-only
+            # matching attaches annotations to every same-named image in a
+            # nested dataset, so keep normalized relative keys instead.
+            if getattr(self, "_coco_annotated_keys", None) is None:
                 import json as _json
                 try:
                     store = CocoAnnotationStore(detected.annotation_dir)
@@ -271,14 +270,33 @@ class CleanupDialog(QDialog):
                             document = _json.loads(json_path.read_text(encoding="utf-8"))
                     image_by_id = {int(item.get("id")): item for item in document.get("images", [])}
                     annotated_ids = {int(ann.get("image_id")) for ann in document.get("annotations", [])}
-                    self._coco_annotated_names = {
-                        Path(str(image_by_id[image_id].get("file_name", ""))).name
+                    annotated_keys = {
+                        self._normalized_relative_name(image_by_id[image_id].get("file_name", ""))
                         for image_id in image_by_id
                         if image_id in annotated_ids
                     }
+                    # Legacy flat COCO files sometimes store only a basename.
+                    # Permit that fallback only when the basename is unique on
+                    # disk; duplicate basenames must remain separate images.
+                    disk_name_counts: dict[str, int] = {}
+                    for candidate in detected.image_dir.rglob("*"):
+                        if candidate.is_file():
+                            key = candidate.name.casefold()
+                            disk_name_counts[key] = disk_name_counts.get(key, 0) + 1
+                    self._coco_annotated_keys = annotated_keys
+                    self._coco_annotated_unique_names = {
+                        key for key in annotated_keys
+                        if "/" not in key and disk_name_counts.get(Path(key).name.casefold(), 0) == 1
+                    }
                 except (OSError, ValueError):
-                    self._coco_annotated_names = set()
-            return "has" if image.name in self._coco_annotated_names else "empty"
+                    self._coco_annotated_keys = set()
+                    self._coco_annotated_unique_names = set()
+            relative_key = self._normalized_relative_name(relative.as_posix())
+            basename_key = image.name.casefold()
+            return "has" if (
+                relative_key in self._coco_annotated_keys
+                or basename_key in self._coco_annotated_unique_names
+            ) else "empty"
         return "error"
 
     def _scan_worker(self, detected) -> None:
@@ -288,7 +306,8 @@ class CleanupDialog(QDialog):
         re-enables the scan button (the dialog never dead-ends disabled).
         """
         format_name = detected.format_name
-        self._coco_annotated_names = None  # cache built lazily on the first image
+        self._coco_annotated_keys = None  # cache built lazily on the first image
+        self._coco_annotated_unique_names = set()
         try:
             self._scan_worker_inner(format_name, detected)
         except Exception as exc:
@@ -316,12 +335,18 @@ class CleanupDialog(QDialog):
         # re-walking the whole image tree for every annotation file.
         orphans: list[Path] = []
         if format_name in ("yolo", "voc"):
-            image_stems = {path.name.rsplit(".", 1)[0].lower() for path in images}
+            image_keys = {
+                self._normalized_relative_name(path.relative_to(detected.image_dir).with_suffix("").as_posix())
+                for path in images
+            }
             suffix = ".txt" if format_name == "yolo" else ".xml"
             for annotation_file in sorted(detected.annotation_dir.rglob(f"*{suffix}")):
-                if format_name == "yolo" and annotation_file.name == "classes.txt":
+                if format_name == "yolo" and annotation_file.name.casefold() == "classes.txt":
                     continue
-                if annotation_file.stem.lower() not in image_stems:
+                annotation_key = self._normalized_relative_name(
+                    annotation_file.relative_to(detected.annotation_dir).with_suffix("").as_posix()
+                )
+                if annotation_key not in image_keys:
                     orphans.append(annotation_file)
 
         self.scan_finished.emit({
@@ -408,15 +433,42 @@ class CleanupDialog(QDialog):
         except OSError:
             return False
 
-    def _sync_coco_json(self, removed_image_names: set[str]) -> None:
-        """Remove JSON image records and their annotations for deleted files."""
+    @staticmethod
+    def _normalized_relative_name(value) -> str:
+        return str(value or "").replace("\\", "/").removeprefix("./").casefold()
+
+    def _sync_coco_json(self, removed_image_keys: set[str]) -> None:
+        """Remove only the exact relative COCO image records deleted on disk."""
         try:
             store = CocoAnnotationStore(self._annotation_dir)
             document = store.read_document()
+            if not document.get("images"):
+                import json as _json
+                json_path = AnnotationService._coco_json_path(self._annotation_dir)
+                if json_path and json_path.is_file():
+                    document = _json.loads(json_path.read_text(encoding="utf-8"))
+            normalized_removed = {self._normalized_relative_name(item) for item in removed_image_keys}
+            rows = list(document.get("images", []))
+            document_name_counts: dict[str, int] = {}
+            for item in rows:
+                name = Path(self._normalized_relative_name(item.get("file_name", ""))).name
+                document_name_counts[name] = document_name_counts.get(name, 0) + 1
+
+            def is_removed(item) -> bool:
+                key = self._normalized_relative_name(item.get("file_name", ""))
+                if key in normalized_removed:
+                    return True
+                # Legacy basename-only rows are safe only when unique.
+                return (
+                    "/" not in key
+                    and document_name_counts.get(Path(key).name, 0) == 1
+                    and any(Path(removed).name == Path(key).name for removed in normalized_removed)
+                )
+
             removed_ids = {
                 int(item.get("id"))
-                for item in document.get("images", [])
-                if Path(str(item.get("file_name", ""))).name in removed_image_names
+                for item in rows
+                if is_removed(item)
             }
             if not removed_ids:
                 return
@@ -440,10 +492,12 @@ class CleanupDialog(QDialog):
         # counter's denominator matches the files the user sees deleted:
         # unannotated images, their mirrored annotation files, then orphans.
         plan: list[Path] = list(self._to_delete_images)
+        annotation_owner: dict[Path, Path] = {}
         for path in self._to_delete_images:
             annotation_file = self._annotation_file_for(path)
             if annotation_file is not None and annotation_file.exists():
                 plan.append(annotation_file)
+                annotation_owner[annotation_file] = path
         plan += self._to_delete_annotations
         total = len(plan)
         if not AppDialog.question("提示", f"确认清理 {total} 个文件？此操作不可恢复。", self):
@@ -464,15 +518,31 @@ class CleanupDialog(QDialog):
         progress(0)
         cleaned: list[Path] = []
         failed: list[Path] = []
+        image_delete_succeeded: dict[Path, bool] = {}
+        image_targets = set(self._to_delete_images)
         for done, path in enumerate(plan, start=1):
-            (cleaned if self._trash(path) else failed).append(path)
+            owner = annotation_owner.get(path)
+            if owner is not None and not image_delete_succeeded.get(owner, False):
+                # Keep a mirrored annotation file when its image could not be
+                # removed. Deleting only one side makes the dataset less
+                # consistent than it was before cleanup.
+                failed.append(path)
+            else:
+                succeeded = self._trash(path)
+                (cleaned if succeeded else failed).append(path)
+                if path in image_targets:
+                    image_delete_succeeded[path] = succeeded
             if done % 5 == 0 or done == total:
                 progress(done)
 
-        # COCO: drop JSON records for the removed images
+        # COCO: drop JSON records only for images actually removed.
         synced_note = ""
         if self._format_name == "coco":
-            removed = {path.name for path in self._to_delete_images}
+            removed = {
+                path.relative_to(self._image_dir).as_posix()
+                for path in self._to_delete_images
+                if image_delete_succeeded.get(path, False)
+            }
             self._sync_coco_json(removed)
             synced_note = (
                 f"[已同步] annotations.json（移除 {len(removed)} 张图片的记录）"

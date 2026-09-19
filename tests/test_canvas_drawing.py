@@ -72,9 +72,10 @@ def test_multipart_polygon_renders_and_secondary_part_is_selectable():
     view.close()
 
 
-def test_loading_an_image_selects_the_first_box():
+def test_image_switch_carries_previous_selection_state():
     app = QApplication.instance() or QApplication([])
-    boxes = [
+    single = [Annotation(ShapeType.RECTANGLE, "person", [QPointF(20, 20), QPointF(80, 80)])]
+    pair = [
         Annotation(ShapeType.RECTANGLE, "person", [QPointF(20, 20), QPointF(80, 80)]),
         Annotation(ShapeType.RECTANGLE, "dog", [QPointF(120, 120), QPointF(180, 180)]),
     ]
@@ -82,20 +83,33 @@ def test_loading_an_image_selects_the_first_box():
     view.resize(800, 600)
     view.show()
 
-    # Selecting a box, then switching images keeps a box selected; with
-    # several boxes present the first one is the default selection.
-    view.load_image(QImage(640, 480, QImage.Format.Format_RGB32), boxes)
+    # Fresh dataset: the previous image had nothing selected, so nothing
+    # gets selected here either.
+    view.load_image(QImage(640, 480, QImage.Format.Format_RGB32), single)
     app.processEvents()
-    assert view.selected_annotation is boxes[0]
+    assert view.selected_annotation is None
+
+    # The user selects the box, then switches: the next image selects its
+    # first box (several boxes -> the first one).
+    view.annotation_items[0].setSelected(True)
+    view.load_image(QImage(640, 480, QImage.Format.Format_RGB32), pair)
+    app.processEvents()
+    assert view.selected_annotation is pair[0]
     assert [item.isSelected() for item in view.annotation_items] == [True, False]
 
-    # Reloading with the same annotations (e.g. metadata arriving) keeps it.
-    view.load_image(QImage(640, 480, QImage.Format.Format_RGB32), boxes)
-    app.processEvents()
-    assert view.selected_annotation is boxes[0]
-
-    # An image without annotations leaves nothing selected.
+    # An empty load (annotations still arriving asynchronously) keeps the
+    # carry alive; the reload that brings the boxes selects the first.
     view.load_image(QImage(640, 480, QImage.Format.Format_RGB32), [])
+    app.processEvents()
+    assert view.selected_annotation is None
+    view.load_image(QImage(640, 480, QImage.Format.Format_RGB32), pair)
+    app.processEvents()
+    assert view.selected_annotation is pair[0]
+
+    # A deselected previous image (e.g. a click on empty canvas) switches
+    # to a clear canvas.
+    view.scene.clearSelection()
+    view.load_image(QImage(640, 480, QImage.Format.Format_RGB32), single)
     app.processEvents()
     assert view.selected_annotation is None
 

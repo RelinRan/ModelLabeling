@@ -398,6 +398,9 @@ class CanvasView(QGraphicsView):
         self.image_item: QGraphicsPixmapItem | None = None
         self.annotation_items: list[AnnotationItem] = []
         self.annotations: list[Annotation] = []
+        # Outgoing-image selection carried across a load that arrives with
+        # no annotations yet (async metadata reload of the same image).
+        self._selection_carry = False
         self._undo_stack: list[list[Annotation]] = []
         self._redo_stack: list[list[Annotation]] = []
         self._drag_undo_pending: list[Annotation] | None = None
@@ -579,7 +582,37 @@ class CanvasView(QGraphicsView):
         if externally_resized and self.image_item and not self.drawing and not self.drag_item:
             self.fit_image()
 
+    def clear_image(self) -> None:
+        """Drop the current image and annotations without loading a new one.
+
+        Switching datasets empties the preview immediately: painting the
+        previous dataset's image over a rescanning list reads as stale data.
+        load_image refills the canvas once the new dataset delivers an image.
+        """
+        self._selection_carry = False
+        self.cancel_drawing()
+        self._hide_keypoint_overlay()
+        self._hide_polygon_count_overlay()
+        blocker = QSignalBlocker(self.scene)
+        self.annotation_items.clear()
+        self.image_item = None
+        self.crosshair_horizontal = None
+        self.crosshair_vertical = None
+        self.scene.clear()
+        del blocker
+        self._undo_stack.clear()
+        self._redo_stack.clear()
+        self._drag_undo_pending = None
+        self._kept_view = None
+        self.annotations = []
+        self.setSceneRect(QRectF())
+        self.zoom_tools.hide()
+        self.annotationSelected.emit(None)
+        self.dirtyChanged.emit(False)
+
     def load_image(self, image: QImage, annotations: list[Annotation]) -> None:
+        # The outgoing image decides the incoming one's selection state.
+        had_selection = any(item.isSelected() for item in self.annotation_items)
         self._capture_view_state()
         self.cancel_drawing()  # switching images drops any half-drawn shape
         self._hide_keypoint_overlay()
@@ -609,10 +642,14 @@ class CanvasView(QGraphicsView):
         self._update_label_overlay()
         self.zoom_tools.show()
         self.zoom_tools.raise_()
-        # Switching images keeps a box selected; with several boxes the first
-        # one is selected by default.
-        if self.annotation_items:
+        # Switching images keeps a box selected only when the previous image
+        # had one selected; with several boxes the first is the default.
+        if self.annotation_items and (had_selection or self._selection_carry):
             self.annotation_items[0].setSelected(True)
+        # A load that arrives without annotations (metadata still loading
+        # asynchronously) keeps the carry alive so the reload that brings
+        # the boxes still honors the previous image's selection.
+        self._selection_carry = bool(had_selection and not self.annotation_items)
         self.annotationSelected.emit(self.selected_annotation)
         self.dirtyChanged.emit(False)
 

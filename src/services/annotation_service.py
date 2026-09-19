@@ -44,6 +44,29 @@ class DatasetAnnotationIndex:
 
 
 class AnnotationService:
+    @staticmethod
+    def _atomic_write_bytes(path: Path, payload: bytes) -> None:
+        """Replace a complete annotation file in one filesystem operation."""
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="wb", dir=path.parent, prefix=f".{path.name}-", suffix=".tmp", delete=False
+            ) as temporary:
+                temporary.write(payload)
+                temporary.flush()
+                os.fsync(temporary.fileno())
+                temporary_path = Path(temporary.name)
+            os.replace(temporary_path, path)
+        finally:
+            if temporary_path is not None and temporary_path.exists():
+                temporary_path.unlink(missing_ok=True)
+
+    @classmethod
+    def _atomic_write_text(cls, path: Path, payload: str) -> None:
+        cls._atomic_write_bytes(path, payload.encode("utf-8"))
+
     def build_index(self, annotation_dir: Path, annotation_format: str, cancel_callback=None) -> DatasetAnnotationIndex:
         index = DatasetAnnotationIndex()
         if not annotation_dir.exists():
@@ -460,19 +483,37 @@ class AnnotationService:
         os.replace(temporary_path, path)
 
     @staticmethod
+    def _resolve_annotation_file(
+        image_path: Path,
+        directory: Path,
+        suffix: str,
+        index: DatasetAnnotationIndex | None = None,
+    ) -> Path:
+        """Resolve an annotation file without crossing image namespaces."""
+        expected = directory / f"{image_path.stem}{suffix}"
+        if expected.is_file():
+            return expected
+        candidates = (
+            list(index.files_by_stem.get(image_path.stem, []))
+            if index is not None
+            else list(directory.rglob(f"{image_path.stem}{suffix}")) if directory.exists() else []
+        )
+        unique = {}
+        for candidate in candidates:
+            if candidate.is_file():
+                unique[str(candidate.resolve()).casefold()] = candidate
+        # A stem-only fallback is safe only when it is unambiguous. Never
+        # attach the first same-named file from another image folder.
+        return next(iter(unique.values())) if len(unique) == 1 else expected
+
+    @staticmethod
     def _polygon_area(points: list[QPointF]) -> float:
         if len(points) < 3:
             return 0.0
         return abs(sum(points[index].x() * points[(index + 1) % len(points)].y() - points[(index + 1) % len(points)].x() * points[index].y() for index in range(len(points))) / 2.0)
 
     def _load_voc(self, image_path: Path, directory: Path, presets: list[LabelPreset], index: DatasetAnnotationIndex | None = None) -> list[Annotation]:
-        xml_path = directory / f"{image_path.stem}.xml"
-        if not xml_path.exists() and index is not None:
-            matches = index.files_by_stem.get(image_path.stem, [])
-            xml_path = matches[0] if matches else xml_path
-        elif not xml_path.exists() and directory.exists():
-            matches = list(directory.rglob(f"{image_path.stem}.xml"))
-            xml_path = matches[0] if matches else xml_path
+        xml_path = self._resolve_annotation_file(image_path, directory, ".xml", index)
         if not xml_path.exists():
             return []
         root = ET.parse(xml_path).getroot()
@@ -520,16 +561,13 @@ class AnnotationService:
             ET.SubElement(box, "ymin").text = str(round(rect.top()))
             ET.SubElement(box, "xmax").text = str(round(rect.right()))
             ET.SubElement(box, "ymax").text = str(round(rect.bottom()))
-        ET.ElementTree(root).write(directory / f"{image_path.stem}.xml", encoding="utf-8", xml_declaration=True)
+        self._atomic_write_bytes(
+            directory / f"{image_path.stem}.xml",
+            ET.tostring(root, encoding="utf-8", xml_declaration=True),
+        )
 
     def _load_yolo(self, image_path: Path, directory: Path, presets: list[LabelPreset], image_size: tuple[int, int] | None = None, index: DatasetAnnotationIndex | None = None) -> list[Annotation]:
-        txt_path = directory / f"{image_path.stem}.txt"
-        if not txt_path.exists() and index is not None:
-            matches = index.files_by_stem.get(image_path.stem, [])
-            txt_path = matches[0] if matches else txt_path
-        elif not txt_path.exists() and directory.exists():
-            matches = list(directory.rglob(f"{image_path.stem}.txt"))
-            txt_path = matches[0] if matches else txt_path
+        txt_path = self._resolve_annotation_file(image_path, directory, ".txt", index)
         if not txt_path.exists():
             return []
         if image_size is None:
@@ -566,13 +604,7 @@ class AnnotationService:
         return annotations
 
     def _load_yolo_pose(self, image_path: Path, directory: Path, presets: list[LabelPreset], image_size: tuple[int, int] | None = None, index: DatasetAnnotationIndex | None = None) -> list[Annotation]:
-        txt_path = directory / f"{image_path.stem}.txt"
-        if not txt_path.exists() and index is not None:
-            matches = index.files_by_stem.get(image_path.stem, [])
-            txt_path = matches[0] if matches else txt_path
-        if not txt_path.exists() and directory.exists():
-            matches = list(directory.rglob(f"{image_path.stem}.txt"))
-            txt_path = matches[0] if matches else txt_path
+        txt_path = self._resolve_annotation_file(image_path, directory, ".txt", index)
         if not txt_path.exists():
             return []
         if image_size is None:
@@ -642,13 +674,7 @@ class AnnotationService:
         return count
 
     def _load_yolo_segmentation(self, image_path: Path, directory: Path, presets: list[LabelPreset], image_size: tuple[int, int] | None = None, index: DatasetAnnotationIndex | None = None) -> list[Annotation]:
-        txt_path = directory / f"{image_path.stem}.txt"
-        if not txt_path.exists() and index is not None:
-            matches = index.files_by_stem.get(image_path.stem, [])
-            txt_path = matches[0] if matches else txt_path
-        if not txt_path.exists() and directory.exists():
-            matches = list(directory.rglob(f"{image_path.stem}.txt"))
-            txt_path = matches[0] if matches else txt_path
+        txt_path = self._resolve_annotation_file(image_path, directory, ".txt", index)
         if not txt_path.exists():
             return []
         if image_size is None:
@@ -674,13 +700,7 @@ class AnnotationService:
 
     def _load_yolo_obb(self, image_path: Path, directory: Path, presets: list[LabelPreset], image_size: tuple[int, int] | None = None, index: DatasetAnnotationIndex | None = None) -> list[Annotation]:
         """Ultralytics OBB rows: class x1 y1 x2 y2 x3 y3 x4 y4 (normalized)."""
-        txt_path = directory / f"{image_path.stem}.txt"
-        if not txt_path.exists() and index is not None:
-            matches = index.files_by_stem.get(image_path.stem, [])
-            txt_path = matches[0] if matches else txt_path
-        elif not txt_path.exists() and directory.exists():
-            matches = list(directory.rglob(f"{image_path.stem}.txt"))
-            txt_path = matches[0] if matches else txt_path
+        txt_path = self._resolve_annotation_file(image_path, directory, ".txt", index)
         if not txt_path.exists():
             return []
         if image_size is None:
@@ -722,7 +742,10 @@ class AnnotationService:
                 for coordinate in (point.x() / width, point.y() / height)
             )
             lines.append(" ".join(values))
-        (directory / f"{image_path.stem}.txt").write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+        self._atomic_write_text(
+            directory / f"{image_path.stem}.txt",
+            "\n".join(lines) + ("\n" if lines else ""),
+        )
 
     def _save_yolo(
         self,
@@ -744,9 +767,9 @@ class AnnotationService:
                 f"{by_name[annotation.label]} {center_x:.6f} {center_y:.6f} "
                 f"{box_width:.6f} {box_height:.6f}"
             )
-        (directory / f"{image_path.stem}.txt").write_text(
+        self._atomic_write_text(
+            directory / f"{image_path.stem}.txt",
             "\n".join(lines) + ("\n" if lines else ""),
-            encoding="utf-8",
         )
 
     def _save_yolo_pose(self, image_path: Path, annotations: list[Annotation], directory: Path, presets: list[LabelPreset], settings: ProjectSettings) -> None:
@@ -770,7 +793,10 @@ class AnnotationService:
                     str(keypoint.visibility),
                 ))
             lines.append(" ".join(values))
-        (directory / f"{image_path.stem}.txt").write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+        self._atomic_write_text(
+            directory / f"{image_path.stem}.txt",
+            "\n".join(lines) + ("\n" if lines else ""),
+        )
 
     def _save_yolo_segmentation(self, image_path: Path, annotations: list[Annotation], directory: Path, presets: list[LabelPreset]) -> None:
         with Image.open(image_path) as image:
@@ -792,4 +818,7 @@ class AnnotationService:
             values = [str(by_name[annotation.label])]
             values.extend(f"{coordinate:.6f}" for point in points for coordinate in (point.x() / width, point.y() / height))
             lines.append(" ".join(values))
-        (directory / f"{image_path.stem}.txt").write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+        self._atomic_write_text(
+            directory / f"{image_path.stem}.txt",
+            "\n".join(lines) + ("\n" if lines else ""),
+        )

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6.QtCore import QAbstractListModel, QModelIndex, Qt, Signal
+from PySide6.QtCore import QAbstractListModel, QModelIndex, QSignalBlocker, Qt, Signal
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import QAbstractItemView, QComboBox, QLabel, QLineEdit, QListView, QVBoxLayout, QWidget
 
@@ -176,6 +176,12 @@ class ImageListPanel(QWidget):
     def set_language(self, language: str) -> None:
         self.search.setPlaceholderText("Search images..." if language == "en_US" else "\u641c\u7d22\u56fe\u7247...")
 
+    def reset_filters(self) -> None:
+        """Drop the previous dataset's filters so a fresh open starts clean."""
+        self.set_label_filter("")
+        self.status.setCurrentIndex(0)
+        self.search.clear()
+
     def set_records(self, records: list[ImageRecord]) -> None:
         self.records = records
         self.list_model.set_records(records)
@@ -198,9 +204,14 @@ class ImageListPanel(QWidget):
     def select_record(self, record: ImageRecord | None) -> None:
         """Select by path without emitting a transient invalid row."""
         row = next((index for index, item in enumerate(self.records) if item.path == getattr(record, "path", None)), -1)
+        # Blocking the view alone is not enough: the selection model is a
+        # separate object, and its currentChanged would re-enter the main
+        # window's select_image for purely programmatic selections.
+        selection_blocker = QSignalBlocker(self.list.selectionModel())
         blocker = self.list.blockSignals(True)
         self.list.setCurrentRow(row)
         self.list.blockSignals(blocker)
+        del selection_blocker
 
     def update_record(self, record: ImageRecord) -> None:
         row = next(

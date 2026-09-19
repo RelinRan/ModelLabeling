@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 import traceback
 
 from pathlib import Path
@@ -124,6 +125,9 @@ class MainWindow(QMainWindow):
         self._dataset_scan_completed = False
         self._dataset_task_dialog_shown = False
         self._dataset_initial_item_selected = False
+        # True once the user picks an image themselves; a scan finishing
+        # afterwards must not yank them back to the first image.
+        self._dataset_user_navigated = False
         self._dataset_dialog_guard = QTimer(self)
         self._dataset_dialog_guard.setInterval(40)
         self._dataset_dialog_guard.timeout.connect(self._hide_unwanted_dataset_dialogs)
@@ -618,11 +622,17 @@ class MainWindow(QMainWindow):
                 for item in self.dataset_index_repository.get_page(offset, limit, query, status, label)
             ]
             page = loader(0, 500)
-            self.state.images = page
             filtered_total = self.dataset_index_repository.count(query, status, label)
+            # Filtering is a view operation. Replacing state.images with the
+            # filtered page changes current_index to a different physical
+            # image when filters are reset, which can save the visible boxes
+            # into the wrong annotation file. Keep the canonical dataset state
+            # intact and only replace the list model.
             self.image_panel.set_paged_records(page, filtered_total, loader)
+            self.image_panel.select_record(self.state.current_image)
             return
         self.image_panel.set_records(self.image_service.filter_records(self.state.images, self.image_panel.search.text(), self.image_panel.selected_status(), self.image_panel.selected_label()))
+        self.image_panel.select_record(self.state.current_image)
 
     def _annotation_path_for_record(self, record: ImageRecord) -> Path | None:
         annotation_dir = self.settings.annotation_dir
@@ -638,15 +648,20 @@ class MainWindow(QMainWindow):
             relative_parent = record.path.parent.relative_to(Path(self.settings.image_dir))
         except (ValueError, TypeError):
             relative_parent = Path()
-        candidates = (
-            annotation_dir / relative_parent / f"{record.path.stem}{suffix}",
-            annotation_dir / f"{record.path.stem}{suffix}",
-        )
-        for candidate in candidates:
-            if candidate.is_file():
-                return candidate
+        expected = annotation_dir / relative_parent / f"{record.path.stem}{suffix}"
+        if expected.is_file():
+            return expected
+        # Some older/flat datasets do not mirror the image subdirectories in
+        # the annotation tree. A stem-only fallback is safe only when exactly
+        # one matching file exists; choosing the first match can expose an
+        # annotation belonging to a same-named image in another directory.
         matches = list(annotation_dir.rglob(f"{record.path.stem}{suffix}")) if annotation_dir.is_dir() else []
-        return matches[0] if matches else None
+        unique = {
+            str(candidate.resolve()).casefold(): candidate
+            for candidate in matches
+            if candidate.is_file()
+        }
+        return next(iter(unique.values())) if len(unique) == 1 else None
 
     def _show_image_context_menu(self, record: ImageRecord) -> None:
         annotation_path = self._annotation_path_for_record(record)
@@ -726,9 +741,47 @@ class MainWindow(QMainWindow):
     def select_image(self, row: int) -> None:
         records = self.image_panel.records
         if not 0 <= row < len(records): return
-        record = records[row]; self.state.current_index = row; self.dataset_current_index = self.dataset_index_repository.position(record.path) if self.dataset_index_repository else row; self._remember_current_image(record.path); self.canvas.load_image(QImage(str(record.path)), record.annotations); self.image_panel.select_record(record); self.canvas.set_image_info(record.path.name, self.dataset_current_index + 1, self.dataset_total_images or len(self.state.images), record.file_format, record.file_size); self.refresh_stats(); self._load_selected_annotations(record)
+        record = records[row]
+        current = self.state.current_image
+        if current is not None and current.path != record.path and not self._save_before_image_switch():
+            self.image_panel.select_record(current)
+            return
+        # A real user pick: the scan-finish handler must keep this image.
+        self._dataset_user_navigated = True
+        state_row = next((index for index, item in enumerate(self.state.images) if item.path == record.path), -1)
+        if state_row < 0:
+            self.state.images.append(record)
+            state_row = len(self.state.images) - 1
+        else:
+            record = self.state.images[state_row]
+        self.state.current_index = state_row; self.dataset_current_index = self.dataset_index_repository.position(record.path) if self.dataset_index_repository else state_row; self._remember_current_image(record.path); self.canvas.load_image(QImage(str(record.path)), record.annotations); self.image_panel.select_record(record); self.canvas.set_image_info(record.path.name, self.dataset_current_index + 1, self.dataset_total_images or len(self.state.images), record.file_format, record.file_size); self.refresh_stats(); self._load_selected_annotations(record)
         if self.dataset_session is not None:
             self.dataset_session.current_path = record.path
+
+    def _save_before_image_switch(self) -> bool:
+        """Snapshot dirty annotations before the canvas starts showing another image.
+
+        The auto-save timer fires after a delay. Without this handoff, a fast
+        image change makes save_current() read the next image and its canvas,
+        leaving the edited image only in memory. A save already in flight is
+        allowed to finish first so a second dirty image gets its own snapshot.
+        """
+        if not self.dirty:
+            return True
+        self._auto_save_timer.stop()
+        thread = self._save_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=15)
+            if thread.is_alive():
+                return False
+            # Deliver _save_finished before deciding whether newer edits still
+            # need another save. It preserves dirty when generations differ.
+            QApplication.processEvents()
+        if self.dirty:
+            self.save_current()
+        # Dataset/project saves take their image path and deep-copied
+        # annotations in the worker constructor, before the canvas changes.
+        return self._save_thread is not None or not self.dirty
 
     def _image_records_fetched(self, records: list[ImageRecord]) -> None:
         """Keep the main state in sync with rows loaded by the paged list."""
@@ -980,13 +1033,43 @@ class MainWindow(QMainWindow):
         """Clean images that carry no usable annotations."""
         if self._operation_blocked("dataset"):
             return
+        # The dialog scans annotation files on disk: flush pending canvas
+        # edits first, or a box the user just cleared still reads as
+        # annotated and its image survives the cleanup.
+        self._flush_pending_annotation_save()
         default_source = str(self.dataset_root) if self.dataset_root else ""
         dialog = CleanupDialog(self.settings.label_presets, self, default_source, self.settings.language)
         dialog.exec()
         if dialog.result() == dialog.DialogCode.Accepted and dialog.cleaned_source:
-            # refresh the current dataset if it was the cleaned one
-            if self.dataset_root and Path(dialog.cleaned_source).resolve() == self.dataset_root.resolve():
-                self._start_open_path(Path(dialog.cleaned_source))
+            self._reload_cleaned_dataset(Path(dialog.cleaned_source))
+
+    def _flush_pending_annotation_save(self, timeout: float = 30.0) -> bool:
+        """Synchronously drain the single-writer save queue before disk reads.
+
+        This is the durability barrier used by cleanup, reload, dataset switch,
+        and window close. It waits for both the worker thread and the queued Qt
+        completion callback; a dead thread alone does not mean the save state
+        has been committed in the UI model.
+        """
+        self._auto_save_timer.stop()
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self._save_worker is None and not self.dirty:
+                return True
+            if self._save_worker is None and self.dirty:
+                self.save_current()
+            thread = self._save_thread
+            if thread is not None and thread.is_alive():
+                thread.join(timeout=min(0.1, max(0.0, deadline - time.monotonic())))
+            QApplication.processEvents()
+            time.sleep(0.001)
+        return self._save_worker is None and not self.dirty
+
+    def _reload_cleaned_dataset(self, source: Path) -> None:
+        """Rescan after a cleanup; the cleaned dataset is usually the one
+        already open, and _start_open_path would refuse to reopen it."""
+        self.dataset_root = None
+        self._start_open_path(source)
 
     def open_conversion(self) -> None:
         if self._operation_blocked("conversion"):
@@ -1114,9 +1197,21 @@ class MainWindow(QMainWindow):
     def _start_open_path(self, root: Path) -> None:
         if self._operation_blocked("dataset"):
             return
-        if self._save_thread is not None and self._save_thread.is_alive():
-            AppDialog.information("提示", "请等待当前标注保存完成后再切换数据集", self)
+        # A dataset/history switch can happen before the delayed auto-save
+        # timer fires. Snapshot the currently visible image while its old
+        # dataset settings and annotation directories are still active.
+        if self.dataset_root is not None and self.dirty and not self._save_before_image_switch():
             return
+        if self._save_thread is not None and self._save_thread.is_alive():
+            # The save result signal can reach the UI just before the worker
+            # thread exits. Join that short tail here so a history/dataset
+            # switch cannot be rejected after the UI already says "saved".
+            self._save_thread.join(timeout=15)
+            if self._save_thread.is_alive():
+                AppDialog.information("提示", "请等待当前标注保存完成后再切换数据集", self)
+                return
+            QApplication.processEvents()
+            self._save_thread = self._save_worker = None
         self._export_coco_checkpoint()
         requested_root = Path(root).resolve()
         if self.dataset_root and requested_root == self.dataset_root.resolve():
@@ -1149,6 +1244,12 @@ class MainWindow(QMainWindow):
         self.state.images = []
         self.state.current_index = -1
         self.image_panel.set_records([])
+        # The preview must not keep painting the previous dataset's image
+        # while the new one scans; the first scan batch reloads the canvas.
+        self.canvas.clear_image()
+        # Another dataset is opening: its previous filters must not hide the
+        # first images, and the fresh open starts at the top of the list.
+        self.image_panel.reset_filters()
         self._dataset_statistics = None
         self._statistics_completed = False
         self._saved_annotation_labels.clear()
@@ -1160,7 +1261,7 @@ class MainWindow(QMainWindow):
                 self._stats_worker.cancelled = True
             stats_thread.join(timeout=15)
         self._stats_thread = self._stats_worker = None
-        self._dataset_cancel_requested = False; self._dataset_load_succeeded = False; self._dataset_scan_completed = False; self._dataset_task_dialog_shown = False; self._dataset_initial_item_selected = False; self.dataset_root = image_dir.parent.resolve(); self._set_dataset_loading(True, "加载"); self._dataset_dialog_guard.start(); self._dataset_thread = QThread(self); self._dataset_worker = DatasetScanWorker(image_dir, annotation_dir, ProjectSettings.from_dict(self.settings.to_dict()), self.dataset_root, self.dataset_session_id); self.dataset_task_id = self.task_manager.start("打开数据集", self.cancel_dataset_scan, 0); self._dataset_worker.moveToThread(self._dataset_thread); self._dataset_thread.started.connect(self._dataset_worker.run); self._dataset_worker.progress.connect(self._dataset_scan_progress); self._dataset_worker.partial.connect(self._dataset_scan_partial); self._dataset_worker.finished.connect(self._dataset_scan_finished); self._dataset_worker.failed.connect(self._dataset_scan_failed); self._dataset_worker.finished.connect(self._dataset_thread.quit); self._dataset_worker.failed.connect(self._dataset_thread.quit); self._dataset_thread.finished.connect(self._dataset_thread_finished); QTimer.singleShot(0, self._dataset_thread.start)
+        self._dataset_cancel_requested = False; self._dataset_load_succeeded = False; self._dataset_scan_completed = False; self._dataset_task_dialog_shown = False; self._dataset_initial_item_selected = False; self._dataset_user_navigated = False; self.dataset_root = image_dir.parent.resolve(); self._set_dataset_loading(True, "加载"); self._dataset_dialog_guard.start(); self._dataset_thread = QThread(self); self._dataset_worker = DatasetScanWorker(image_dir, annotation_dir, ProjectSettings.from_dict(self.settings.to_dict()), self.dataset_root, self.dataset_session_id); self.dataset_task_id = self.task_manager.start("打开数据集", self.cancel_dataset_scan, 0); self._dataset_worker.moveToThread(self._dataset_thread); self._dataset_thread.started.connect(self._dataset_worker.run); self._dataset_worker.progress.connect(self._dataset_scan_progress); self._dataset_worker.partial.connect(self._dataset_scan_partial); self._dataset_worker.finished.connect(self._dataset_scan_finished); self._dataset_worker.failed.connect(self._dataset_scan_failed); self._dataset_worker.finished.connect(self._dataset_thread.quit); self._dataset_worker.failed.connect(self._dataset_thread.quit); self._dataset_thread.finished.connect(self._dataset_thread_finished); QTimer.singleShot(0, self._dataset_thread.start)
         self._count_thread = QThread(self)
         self._count_worker = DatasetCountWorker(image_dir, self.dataset_session_id)
         self._count_worker.moveToThread(self._count_thread)
@@ -1350,6 +1451,15 @@ class MainWindow(QMainWindow):
         # The model reset inside refresh_image_list clears the list's current
         # row; restore the selection so the open dataset always shows its
         # first (or remembered) image highlighted.
+        if not self._dataset_user_navigated and self.state.images:
+            # Opening a dataset lands on the first sorted list row. The
+            # canonical state keeps scan order, so resolve that row by path
+            # instead of assuming state.images[0] has the same order.
+            first_path = self.image_panel.records[0].path if self.image_panel.records else self.state.images[0].path
+            self.state.current_index = next(
+                (index for index, item in enumerate(self.state.images) if item.path == first_path),
+                0,
+            )
         if self.state.current_image is not None:
             self.image_panel.select_record(self.state.current_image)
             # The page rebuild replaced the record objects; make sure the
@@ -1358,6 +1468,12 @@ class MainWindow(QMainWindow):
             if not self.state.current_image.metadata_loaded:
                 self._load_selected_annotations(self.state.current_image)
         if records and not append_only_result:
+            self._select_state_image()
+        elif not self._dataset_user_navigated and self.state.current_image is not None:
+            # Incremental (append-only) finishes still must show the chosen
+            # image on the canvas; without this the preview keeps whatever
+            # the first scan batch happened to display. A user pick during
+            # the scan is left untouched (a reload would drop undo history).
             self._select_state_image()
 
     def _dataset_scan_failed(self, message: str) -> None:
@@ -1493,42 +1609,66 @@ class MainWindow(QMainWindow):
 
     def save_current(self) -> None:
         current = self.state.current_image
-        if current is None: self.dirty = False; return
-        if self._save_thread is not None and self._save_thread.is_alive():
+        if current is None:
+            self.dirty = False
             return
-        self._save_generation_in_flight = self._save_generation
+        # A save remains active until its queued completion callback has been
+        # consumed, not merely until the OS thread exits. Otherwise a second
+        # save can overwrite the shared worker/statistics fields before the
+        # first completion is applied.
+        if self._save_worker is not None:
+            return
+        generation = self._save_generation
+        self._save_generation_in_flight = generation
         save_settings = ProjectSettings.from_dict(self.settings.to_dict())
         save_settings.label_presets = list(self.dataset_parser_presets or self.settings.label_presets)
-        path_key = str(current.path)
-        new_labels = Counter(annotation.label for annotation in self.canvas.annotations)
+        image_path = Path(current.path)
+        annotations = [Annotation.from_dict(item.to_dict()) for item in self.canvas.annotations]
+        path_key = str(image_path)
+        new_labels = Counter(annotation.label for annotation in annotations)
         old_labels = self._saved_annotation_labels.get(path_key, Counter(new_labels))
-        self._pending_save_statistics = (path_key, Counter(old_labels), Counter(new_labels))
+        pending_statistics = (path_key, Counter(old_labels), Counter(new_labels))
         if self.project_file:
-            self._save_worker = SaveWorker(self.project_file, current.path, list(self.canvas.annotations), save_settings)
+            worker = SaveWorker(self.project_file, image_path, annotations, save_settings)
         elif self.settings.image_dir and self.settings.annotation_dir:
-            self._save_worker = DatasetAnnotationSaveWorker(current.path, self.settings.image_dir, self.settings.annotation_dir, list(self.canvas.annotations), save_settings)
+            worker = DatasetAnnotationSaveWorker(
+                image_path, self.settings.image_dir, self.settings.annotation_dir, annotations, save_settings
+            )
         else:
             self.dirty = False
             return
-        # Plain Python thread, same pattern as the statistics worker: running
-        # the save worker through a QThread whose teardown races the main
-        # thread's event loop corrupts the heap on Windows. The finished
-        # signal is delivered back to the main thread via the event loop.
-        self._save_worker.finished.connect(self._save_finished)
-        self._save_thread = threading.Thread(target=self._save_run, daemon=True, name="dataset-save")
-        self._save_thread.start()
+        self._pending_save_statistics = pending_statistics
+        self._save_worker = worker
+        # Bind every completion to its immutable request snapshot. This turns
+        # saving into a single-writer queue: newer edits remain dirty and are
+        # saved only after this exact request has completed.
+        worker.finished.connect(
+            lambda error, worker=worker, generation=generation, pending=pending_statistics:
+            self._save_finished(error, worker, generation, pending)
+        )
+        thread = threading.Thread(
+            target=self._save_run, args=(worker,), daemon=True, name="dataset-save"
+        )
+        self._save_thread = thread
+        thread.start()
 
-    def _save_run(self) -> None:
+    @staticmethod
+    def _save_run(worker) -> None:
         try:
-            self._save_worker.run()
+            worker.run()
         except Exception:
             traceback.print_exc()
 
-    def _save_finished(self, error: str) -> None:
+    def _save_finished(self, error: str, worker, generation: int, pending_statistics) -> None:
+        # Ignore a late signal from a request that is no longer active. The
+        # active worker identity is stronger than checking thread.is_alive().
+        if worker is not self._save_worker:
+            return
+        self._save_thread = None
+        self._save_worker = None
+        self._pending_save_statistics = None
         if not error:
-            self._apply_saved_annotation_statistics()
-        else:
-            self._pending_save_statistics = None
+            self._apply_saved_annotation_statistics(pending_statistics)
         if error:
             # Defer the modal dialog out of the save-thread signal callback:
             # a modal exec() here starts a nested event loop while the save
@@ -1536,10 +1676,10 @@ class MainWindow(QMainWindow):
             if error != self._last_save_error:
                 self._last_save_error = error
                 QTimer.singleShot(0, lambda: self._show_save_error(error))
-        elif self._save_generation == self._save_generation_in_flight:
+        elif self._save_generation == generation:
             self.dirty = False
         elif self.settings.auto_save:
-            self._auto_save_timer.start(50)
+            self._auto_save_timer.start(0)
         if not error and not self.settings.auto_save:
             self._export_coco_checkpoint()
 
@@ -1557,9 +1697,10 @@ class MainWindow(QMainWindow):
             if self.isVisible():
                 AppDialog.information("提示", translate_error(str(exc)), self)
 
-    def _apply_saved_annotation_statistics(self) -> None:
-        pending = self._pending_save_statistics
-        self._pending_save_statistics = None
+    def _apply_saved_annotation_statistics(self, pending=None) -> None:
+        if pending is None:
+            pending = self._pending_save_statistics
+            self._pending_save_statistics = None
         if pending is None:
             return
         path_key, old_labels, new_labels = pending
@@ -1788,6 +1929,19 @@ class MainWindow(QMainWindow):
                 thread.join(timeout=5)
 
     def closeEvent(self, event) -> None:
+        # Closing before the 300 ms debounce used to discard the last edit.
+        # Treat close as a durability barrier and refuse it if persistence does
+        # not finish, rather than silently accepting data loss.
+        if not self._flush_pending_annotation_save():
+            AppDialog.information(
+                "Save failed" if self.settings.language == "en_US" else "????",
+                "Annotations are still unsaved. Please retry after checking the dataset files."
+                if self.settings.language == "en_US" else
+                "???????????????????",
+                self,
+            )
+            event.ignore()
+            return
         self._stop_background_tasks_for_exit()
         self._export_coco_checkpoint()
         self._close_task_list()

@@ -31,6 +31,29 @@ def _settings(root: Path, fmt: str, task: str, presets: list[LabelPreset]) -> Pr
     )
 
 
+def test_missing_annotation_never_falls_back_to_same_stem_from_other_folder(tmp_path):
+    image_a = tmp_path / "images" / "a" / "frame.jpg"
+    image_b = tmp_path / "images" / "b" / "frame.jpg"
+    labels_a = tmp_path / "labels" / "a"
+    labels_b = tmp_path / "labels" / "b"
+    image_a.parent.mkdir(parents=True)
+    image_b.parent.mkdir(parents=True)
+    labels_a.mkdir(parents=True)
+    labels_b.mkdir(parents=True)
+    _sample_image(image_a)
+    _sample_image(image_b)
+    # Only image b is labeled. Loading image a must not borrow b's box.
+    (labels_b / "frame.txt").write_text("0 0.5 0.5 0.2 0.2\n", encoding="utf-8")
+    settings = ProjectSettings(
+        image_dir=tmp_path / "images", annotation_dir=tmp_path / "labels",
+        annotation_format="yolo", dataset_task="yolo_detection",
+        label_presets=[LabelPreset("person", 0, "#00e5ff")],
+    )
+    service = AnnotationService()
+    assert service.load(image_a, labels_a, settings).annotations == []
+    assert len(service.load(image_b, labels_b, settings).annotations) == 1
+
+
 def test_official_shapes_round_trip(tmp_path):
     image = tmp_path / "sample.jpg"
     _sample_image(image)
