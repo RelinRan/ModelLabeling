@@ -16,6 +16,8 @@ class ImageFileModel(QAbstractListModel):
         self.records: list[ImageRecord] = []
         self._page_loader: Callable[[int, int], list[ImageRecord]] | None = None
         self._total_count = 0
+        # Keep the initial/list fetch responsive. Index scanning itself runs
+        # independently in the worker.
         self._page_size = 500
 
     @staticmethod

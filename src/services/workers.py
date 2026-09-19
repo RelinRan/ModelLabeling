@@ -111,6 +111,12 @@ class DatasetStatisticsWorker(QObject):
 
 
 class DatasetScanWorker(QObject):
+    # Keep worker batches aligned with the responsive 500-row UI preload.
+    # Indexing and annotation persistence are path-based and independent;
+    # only progress/partial signals cross back to the UI thread.
+    INDEX_BATCH_SIZE = 500
+    PROGRESS_STEP = 100
+
     progress = Signal(int, int)
     partial = Signal(object)
     finished = Signal(object)
@@ -122,6 +128,9 @@ class DatasetScanWorker(QObject):
         self.settings = ProjectSettings.from_dict(settings.to_dict())
         self.dataset_root, self.session_id = Path(dataset_root or image_dir.parent).resolve(), session_id
         self.cancelled = False
+        # Filled by the parallel image-count worker when it finishes. Until
+        # then progress remains indeterminate (0/...).
+        self.total_count = 0
 
     def run(self) -> None:
         try:
@@ -131,11 +140,19 @@ class DatasetScanWorker(QObject):
                 self.partial.emit(DatasetScanResult([], presets, repository.count(), True, self.session_id))
             repository.set_complete(False)
             indexed = 0; first = False
-            for batch in repository.scan_paths(lambda: self.cancelled, 500, [p.name for p in presets]):
-                repository.upsert_batch(batch); indexed += len(batch)
+            for batch in repository.scan_paths(lambda: self.cancelled, self.INDEX_BATCH_SIZE, [p.name for p in presets]):
+                repository.upsert_batch(batch)
                 if not first:
                     self.partial.emit(DatasetScanResult([self._record(item) for item in batch], presets, 0, True, self.session_id)); first = True
-                self.progress.emit(indexed, 0)
+                # Report incremental progress within the 500-item indexing
+                # batch, rather than jumping directly from 0 to 500.
+                for offset in range(self.PROGRESS_STEP, len(batch) + 1, self.PROGRESS_STEP):
+                    if self.cancelled:
+                        return
+                    self.progress.emit(indexed + offset, self.total_count)
+                indexed += len(batch)
+                if len(batch) % self.PROGRESS_STEP:
+                    self.progress.emit(indexed, self.total_count)
             if self.cancelled:
                 return
             repository.prune_missing(lambda: self.cancelled); total = repository.count(); repository.set_complete(True)

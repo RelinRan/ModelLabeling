@@ -267,7 +267,7 @@ class MainWindow(QMainWindow):
         self.status_position = QLabel("图片: -/-")
         self.status_size = QLabel("大小: -")
         self.status_resolution = QLabel("分辨率: -")
-        self.status_current_count = QLabel("图标签: 0")
+        self.status_current_count = QLabel("\u6807\u7b7e\u6570\u91cf\uff1a0")
         self.status_labeled_count = QLabel("总标注: 0")
         self.status_progress_text = QLabel("总进度: 0%")
         self.status_labeled_count.hide()
@@ -282,10 +282,9 @@ class MainWindow(QMainWindow):
         status_layout.setSpacing(0)
         groups = (
             (self.status_format,),
-            (self.status_position, self.status_file, self.status_size, self.status_resolution),
+            (self.status_position, self.status_file, self.status_size, self.status_resolution, self.status_current_count),
         )
         self.status_selected_label.hide()
-        self.status_current_count.hide()
         for group_index, group in enumerate(groups):
             for item in group: status_layout.addWidget(item)
             if group_index < len(groups) - 1:
@@ -598,7 +597,10 @@ class MainWindow(QMainWindow):
         self.dirty = value
         if value and self.settings.auto_save and (self.project_file or (self.settings.image_dir and self.settings.annotation_dir)):
             self._save_generation += 1
-            self._auto_save_timer.start(300)
+            # Queue the save for the next event-loop turn.  A zero-delay
+            # timer coalesces rapid drag updates while making every completed
+            # annotation action durable before the UI can switch context.
+            self._auto_save_timer.start(0)
 
     def _refresh_toolbar(self) -> None:
         self.save_action.setVisible(True)
@@ -887,8 +889,11 @@ class MainWindow(QMainWindow):
             self.status_size.setText(f"Size: {size_text}" if english else f"大小: {size_text}")
             resolution = f"{current.width}x{current.height}" if current.width > 0 and current.height > 0 else "--"
             self.status_resolution.setText(f"Resolution: {resolution}" if english else f"分辨率: {resolution}")
+            annotation_count = len(current.annotations)
+            self.status_current_count.setText(f"Labels: {annotation_count}" if english else "\u6807\u7b7e\u6570\u91cf\uff1a" + str(annotation_count))
         else:
             self.status_position.setText("Image: --" if english else "图片: --"); self.status_file.setText("File: --" if english else "文件: --"); self.status_size.setText("Size: --" if english else "大小: --"); self.status_resolution.setText("Resolution: --" if english else "分辨率: --")
+            self.status_current_count.setText("Labels: 0" if english else "\u6807\u7b7e\u6570\u91cf\uff1a0")
         self.status_saved.setText("Unsaved" if english and self.dirty else "Saved" if english else "未保存" if self.dirty else "已保存")
         self._refresh_task_status()
 
@@ -1214,7 +1219,12 @@ class MainWindow(QMainWindow):
             self._save_thread = self._save_worker = None
         self._export_coco_checkpoint()
         requested_root = Path(root).resolve()
+        # Show feedback before dataset detection starts. Detection itself is
+        # synchronous, so otherwise the status bar stays blank at the start
+        # of the first dataset load.
+        self._set_status_progress("???", 0, 0)
         if self.dataset_root and requested_root == self.dataset_root.resolve():
+            self.status_progress_host.setVisible(False)
             language = self.settings.language
             AppDialog.information(
                 "提示",
@@ -1225,6 +1235,7 @@ class MainWindow(QMainWindow):
         try:
             detected = DatasetDetector.detect(requested_root)
         except ValueError as exc:
+            self.status_progress_host.setVisible(False)
             AppDialog.information("提示", translate_error(str(exc)), self); return
         self.dataset_session = DatasetSession.from_detected(detected)
         self.dataset_root = self.dataset_session.root; self.settings.annotation_format = self.dataset_session.format_name; self.settings.dataset_task = self.dataset_session.task_name; self.settings.image_dir = self.dataset_session.image_dir; self.settings.annotation_dir = self.dataset_session.annotation_dir; self._apply_annotation_capabilities(); self._update_window_title(); self.refresh_stats(); self._remember_history(root); self.history_store.setValue("reopen/last_root", str(self.dataset_session.root)); self.history_store.sync(); self._start_dataset_scan(self.dataset_session.image_dir, self.dataset_session.annotation_dir)
@@ -1333,8 +1344,12 @@ class MainWindow(QMainWindow):
 
     def _dataset_scan_progress(self, current: int, total: int) -> None:
         self.dataset_indexed_images = current
+        # The image-count worker may finish before the next scan signal. Use
+        # that authoritative count immediately so the bar shows the real
+        # dataset denominator instead of falling back to an indeterminate bar.
+        total = int(total or self.dataset_total_images or 0)
         if total:
-            percent = int(current / total * 100)
+            percent = min(100, int(current / total * 100))
             if current >= total:
                 self._show_statistics_transition()
             else:

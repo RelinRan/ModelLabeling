@@ -4,7 +4,7 @@ English | **[简体中文](README.zh-CN.md)**
 
 A Windows-first Python/PySide6 desktop annotation workbench for YOLO / Pascal VOC / COCO datasets. Covers all four official Ultralytics YOLO label-file tasks (detect, segment, pose, OBB), with a large-dataset SQLite index, a workspace-style new-dataset wizard, and ONNX auto labeling.
 
-- Version: v1.1.2
+- Version: v1.1.3
 - Author: RelinRan · [GitHub](https://github.com/RelinRan) · relinran@foxmail.com
 
 ---

@@ -21,6 +21,11 @@ class LabelGroupsDialog(QDialog):
             for group in groups
         ]
         self.group_list = QListWidget(); self.group_list.currentRowChanged.connect(self._select_group)
+        # Group order is persisted data; only the explicit group actions may change it.
+        self.group_list.setDragEnabled(False)
+        self.group_list.setAcceptDrops(False)
+        self.group_list.setDropIndicatorShown(False)
+        self.group_list.setDragDropMode(QListWidget.DragDropMode.NoDragDrop)
         self.group_list.setObjectName("groupFileList")
         self.group_list.setStyleSheet(
             "QListWidget#groupFileList, QListWidget#groupFileList:focus { background: #25272A; border: 1px solid #464A50; border-radius: 5px; padding: 6px; outline: 0; } "

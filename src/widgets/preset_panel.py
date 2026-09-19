@@ -29,6 +29,11 @@ class PresetPanel(QWidget):
         self.title_label = QLabel("\u6807\u7b7e\u8bbe\u7f6e"); self.title_label.hide()
         self.group_combo = QComboBox(); self.group_combo.currentIndexChanged.connect(self._group_selected)
         self.list = QListWidget(); self.list.hide(); self.list.currentRowChanged.connect(self._selected)
+        # Preset order is meaningful and must not be changed by drag/drop.
+        self.list.setDragEnabled(False)
+        self.list.setAcceptDrops(False)
+        self.list.setDropIndicatorShown(False)
+        self.list.setDragDropMode(QListWidget.DragDropMode.NoDragDrop)
         self.label_frame = QFrame(); self.label_frame.setObjectName("labelArea")
         frame_layout = QVBoxLayout(self.label_frame); frame_layout.setContentsMargins(8, 8, 8, 8)
         self.grid_host = QWidget(); self.grid = QGridLayout(self.grid_host); self.grid.setContentsMargins(0, 0, 0, 0); self.grid.setHorizontalSpacing(7); self.grid.setVerticalSpacing(7); self.grid.setAlignment(Qt.AlignmentFlag.AlignTop)
