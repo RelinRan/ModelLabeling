@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6.QtCore import QAbstractListModel, QModelIndex, QSignalBlocker, Qt, Signal
+from PySide6.QtCore import QAbstractListModel, QModelIndex, QSignalBlocker, QTimer, Qt, Signal
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import QAbstractItemView, QComboBox, QLabel, QLineEdit, QListView, QVBoxLayout, QWidget
 
@@ -16,6 +16,8 @@ class ImageFileModel(QAbstractListModel):
         self.records: list[ImageRecord] = []
         self._page_loader: Callable[[int, int], list[ImageRecord]] | None = None
         self._total_count = 0
+        self._fetch_retry_pending = False
+        self._fetch_retry_count = 0
         # Keep the initial/list fetch responsive. Index scanning itself runs
         # independently in the worker.
         self._page_size = 100
@@ -46,6 +48,8 @@ class ImageFileModel(QAbstractListModel):
 
     def set_paged_records(self, records: list[ImageRecord], total_count: int, loader: Callable[[int, int], list[ImageRecord]]) -> None:
         self._page_loader = loader
+        self._fetch_retry_pending = False
+        self._fetch_retry_count = 0
         self._total_count = max(len(records), int(total_count))
         self.beginResetModel()
         self.records = list(records)
@@ -58,10 +62,27 @@ class ImageFileModel(QAbstractListModel):
         return not parent.isValid() and self._page_loader is not None and len(self.records) < self._total_count
 
     def fetchMore(self, parent=QModelIndex()) -> None:
-        if not self.canFetchMore(parent):
+        if not self.canFetchMore(parent) or self._fetch_retry_pending:
             return
         page = self._page_loader(len(self.records), self._page_size)
-        self.append_records(page)
+        if page:
+            self._fetch_retry_count = 0
+            self.append_records(page)
+            return
+        # The index scan and the paged view use separate event-loop turns.
+        # If the count is already visible but the final page has not become
+        # readable yet, retry asynchronously instead of permanently leaving
+        # the list at the first page.
+        if self._fetch_retry_count >= 20:
+            self._fetch_retry_count = 0
+            return
+        self._fetch_retry_count += 1
+        self._fetch_retry_pending = True
+        QTimer.singleShot(50, self._retry_fetch_more)
+
+    def _retry_fetch_more(self) -> None:
+        self._fetch_retry_pending = False
+        self.fetchMore()
 
     def append_records(self, records: list[ImageRecord]) -> None:
         if not records:
