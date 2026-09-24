@@ -35,6 +35,7 @@ A Windows-first Python/PySide6 desktop annotation workbench for YOLO / Pascal VO
 | Compatibility | Fully unannotated datasets open directly (empty labels/, no Annotations/, plain image folders) |
 | Auto labeling | ONNX inference; official YOLO detection/Pose models; runs in background, stoppable |
 | Conversion | Batch YOLO / VOC / COCO conversion preserving layout and data.yaml class names |
+| Video tools | Recursively extract frames from nested video folders at a selected FPS; synthesize COCO / YOLO / Pascal VOC datasets from frame folders |
 | Editing | Continuous drawing, undo/redo, move/resize/rotate, keypoint visibility (COCO 0/1/2) |
 | Large datasets | SQLite path index + keyset pagination; smooth with tens of thousands of images |
 | UI | IDEA-style dark theme, English/Chinese, every menu/dialog/status bar refreshes live |
@@ -179,8 +180,13 @@ Predefine everything about a keypoint schema once, then just pick it while annot
 
 ### Statistics & conversion
 
-- Statistics (Ctrl+D+S): totals, per-class distribution, progress (computed in the background)
+- Statistics (Ctrl+T+S): totals, per-class distribution, progress (computed in the background)
 - Conversion (Ctrl+D+C): batch YOLO/VOC/COCO
+
+### Video frame extraction & dataset synthesis
+
+- Extract video frames (Ctrl+V+F): recursively scans the selected video folder (including nested directories) and samples frames at the chosen FPS into the selected output directory (default: 5 FPS). Progress appears at the bottom-right of the main status bar, followed by a readable completion summary.
+- Synthesize dataset (Ctrl+D+S): builds a COCO, YOLO, or Pascal VOC dataset from the selected frame folder. Choose an empty output directory to avoid overwriting existing data. Progress appears at the bottom-right of the main status bar; the completion message reports success, failure, and skipped counts.
 
 ### Auto labeling (Ctrl+A+L)
 
@@ -201,9 +207,11 @@ Select a YOLO ONNX model in Settings first; official YOLO detection and Pose mod
 | 1-9 | Select the bound label | Ctrl+1-9 | Bind the selected label to that key |
 | Ctrl+L+G | Label groups | Ctrl+K+G | Keypoint types |
 | Ctrl+A+S | Settings | Ctrl+I+F | File filter |
-| Ctrl+C+A | Annotation assist | Ctrl+D+S | Statistics |
-| Ctrl+D+C | Dataset conversion | Ctrl+A+L | Auto labeling |
-| Ctrl+H | History | Tab | Skip keypoint (visibility 0) |
+| Ctrl+C+A | Annotation assist | Ctrl+T+S | Statistics |
+| Ctrl+D+C | Dataset conversion | Ctrl+V+F | Extract video frames |
+| Ctrl+D+S | Synthesize dataset | Ctrl+D+P | Compare dataset |
+| Ctrl+A+L | Auto labeling | Ctrl+H | History |
+| Tab | Skip keypoint (visibility 0) |  |  |
 
 ---
 

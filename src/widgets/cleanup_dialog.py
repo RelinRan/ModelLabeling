@@ -4,11 +4,14 @@ import threading
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QApplication, QComboBox, QDialog, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton, QSizePolicy, QSpinBox, QVBoxLayout, QWidget
 
 from src.models.annotation import LabelPreset
 from src.services.annotation_service import AnnotationService
 from src.services.coco_store import CocoAnnotationStore
+from src.services.cleanup import FixPolicy, fix_dataset, scan_dataset
+from src.services.cleanup.report import RULES, Severity
+from src.services.cleanup.runner import DEFAULT_MIN_BOX_SIZE as MIN_BOX_SIZE
 from src.services.dataset_detector import DatasetDetector
 from .common_dialogs import AppDialog
 from .form_layout import configure_buttons, configure_form, section_card, set_confirm_button, set_content_margins, size_buttons
@@ -33,6 +36,8 @@ class CleanupDialog(QDialog):
 
     scan_progress = Signal(int, int, int)
     scan_finished = Signal(object)
+    clean_progress = Signal(str)
+    clean_finished = Signal(object)
 
     def __init__(self, presets: list[LabelPreset], parent=None, default_source: str = "", language: str = "zh_CN") -> None:
         super().__init__(parent)
@@ -58,6 +63,15 @@ class CleanupDialog(QDialog):
         self.source_format = QComboBox()
         self.source_format.addItem("COCO", "coco"); self.source_format.addItem("YOLO", "yolo"); self.source_format.addItem("Pascal VOC", "voc")
         source_form.addRow("格式" if not self.english else "Format", self.source_format)
+        # Shorter-side threshold for the "tiny box" finding. It is an
+        # annotation policy rather than a property of the data, so it is a
+        # control instead of a constant, and the report names the value used.
+        self.min_box_size = QSpinBox()
+        self.min_box_size.setRange(1, 999)
+        self.min_box_size.setValue(MIN_BOX_SIZE)
+        self.min_box_size.setSuffix(" px")
+        self.min_box_size.setFixedHeight(30)
+        source_form.addRow("最小框尺寸" if not self.english else "Min box size", self.min_box_size)
         source_card.addLayout(source_form)
 
         # ---- scan + report ---------------------------------------------------
@@ -67,6 +81,8 @@ class CleanupDialog(QDialog):
         source_card.addWidget(self.scan_button)
         self.scan_progress.connect(self._on_scan_progress)
         self.scan_finished.connect(self._on_scan_finished)
+        self.clean_progress.connect(self._on_clean_progress)
+        self.clean_finished.connect(self._on_clean_finished)
         # ---- scan result module ----------------------------------------------
         result_card = section_card(layout, "扫描结果" if not self.english else "Scan Result")
         self.result_label = QPlainTextEdit()
@@ -104,6 +120,36 @@ class CleanupDialog(QDialog):
             layout, "清理操作" if not self.english else "Cleanup",
             badge=self.warning_label, badge_after_title=True,
         )
+
+        # The two switches the whole pass is about. Structural repairs have
+        # one defensible answer each, so they are on by default; a quality
+        # rule encodes annotation policy -- how small is too small, whether a
+        # box-less image is a negative sample -- so it is the user's call.
+        policy_box = QVBoxLayout()
+        policy_box.setSpacing(2)
+        self.fix_structural = QCheckBox(
+            "结构修复（标注与图片不一致，自动修正）" if not self.english
+            else "Structural repairs (fix annotation/image mismatches)"
+        )
+        self.fix_structural.setChecked(True)
+        self.fix_structural.toggled.connect(self._update_policy_detail)
+        self.fix_quality = QCheckBox(
+            "质量策略（删除过小/重复框、无标注图片）" if not self.english
+            else "Quality policy (drop tiny/duplicate boxes, unannotated images)"
+        )
+        self.fix_quality.setChecked(False)
+        self.fix_quality.toggled.connect(self._update_policy_detail)
+        policy_box.addWidget(self.fix_structural)
+        policy_box.addWidget(self.fix_quality)
+        self.policy_detail = QLabel()
+        self.policy_detail.setWordWrap(True)
+        self.policy_detail.setStyleSheet(
+            "QLabel { background: transparent; border: none; color: #8E97A8; "
+            "font-size: 11px; }"
+        )
+        policy_box.addWidget(self.policy_detail)
+        cleanup_card.addLayout(policy_box)
+        self._update_policy_detail()
 
         buttons = configure_buttons(QHBoxLayout())
         # The start-cleanup button keeps the start-scan button's height and
@@ -199,6 +245,9 @@ class CleanupDialog(QDialog):
         self._format_name = detected.format_name
         self._image_dir = detected.image_dir
         self._annotation_dir = detected.annotation_dir
+        # Read the widgets here: the scan runs on a worker thread, which must
+        # not touch them.
+        self._min_box_size = self.min_box_size.value()
 
         self._scanning = True
         self.scan_button.setEnabled(False)
@@ -317,44 +366,75 @@ class CleanupDialog(QDialog):
         from src.services.image_service import SUPPORTED_IMAGE_EXTENSIONS
         images = sorted(path for path in detected.image_dir.rglob("*")
                         if path.is_file() and path.suffix.lower() in SUPPORTED_IMAGE_EXTENSIONS)
+        self.scan_progress.emit(0, len(images), 0)
+
+        # The validator decodes every image, which is by far the slower half
+        # of a scan, so it drives the live progress line. The deletion pass
+        # below only reads text and runs quietly afterwards.
+        plan, validation_error = self._validate(detected)
+        useless, problematic = self._unusable_images(format_name, images, detected)
+
+        self.scan_finished.emit({
+            "useless": useless,
+            "orphans": self._orphan_annotations(format_name, images, detected),
+            "problematic": problematic,
+            "total": len(images),
+            "plan": plan,
+            "validation_error": validation_error,
+        })
+
+    def _validate(self, detected) -> tuple[object | None, str]:
+        """Run the read-only validator.
+
+        A validator failure must not cancel the scan: the deletion pass is
+        what the cleanup acts on, so its result is still worth reporting. The
+        error is surfaced in the report instead of being swallowed.
+        """
+        try:
+            plan = scan_dataset(
+                detected.root,
+                presets=self.presets,
+                detected=detected,
+                min_box_size=getattr(self, "_min_box_size", MIN_BOX_SIZE),
+                progress=lambda done, count: self.scan_progress.emit(done, count, 0),
+            )
+        except Exception as exc:
+            return None, f"{type(exc).__name__}: {exc}"
+        return plan, ""
+
+    def _unusable_images(self, format_name: str, images: list[Path], detected) -> tuple[list[Path], list[Path]]:
         useless: list[Path] = []
         problematic: list[Path] = []
-        self.scan_progress.emit(0, len(images), 0)
-        for index, image in enumerate(images, start=1):
-            if index % 5 == 0 or index == len(images):
-                self.scan_progress.emit(index, len(images), len(useless))
+        for image in images:
             state = self._image_annotation_state(format_name, image, detected)
             if state == "empty":
                 useless.append(image)
             elif state == "error":
                 problematic.append(image)
+        return useless, problematic
 
-        # Annotation files whose image no longer exists (keeps folders in
-        # sync when images were deleted outside the app). Image names are
-        # indexed once so the orphan check is O(1) per file instead of
-        # re-walking the whole image tree for every annotation file.
+    def _orphan_annotations(self, format_name: str, images: list[Path], detected) -> list[Path]:
+        """Annotation files whose image no longer exists (keeps folders in
+        sync when images were deleted outside the app). Image names are
+        indexed once so the orphan check is O(1) per file instead of
+        re-walking the whole image tree for every annotation file."""
+        if format_name not in ("yolo", "voc"):
+            return []
+        image_keys = {
+            self._normalized_relative_name(path.relative_to(detected.image_dir).with_suffix("").as_posix())
+            for path in images
+        }
+        suffix = ".txt" if format_name == "yolo" else ".xml"
         orphans: list[Path] = []
-        if format_name in ("yolo", "voc"):
-            image_keys = {
-                self._normalized_relative_name(path.relative_to(detected.image_dir).with_suffix("").as_posix())
-                for path in images
-            }
-            suffix = ".txt" if format_name == "yolo" else ".xml"
-            for annotation_file in sorted(detected.annotation_dir.rglob(f"*{suffix}")):
-                if format_name == "yolo" and annotation_file.name.casefold() == "classes.txt":
-                    continue
-                annotation_key = self._normalized_relative_name(
-                    annotation_file.relative_to(detected.annotation_dir).with_suffix("").as_posix()
-                )
-                if annotation_key not in image_keys:
-                    orphans.append(annotation_file)
-
-        self.scan_finished.emit({
-            "useless": useless,
-            "orphans": orphans,
-            "problematic": problematic,
-            "total": len(images),
-        })
+        for annotation_file in sorted(detected.annotation_dir.rglob(f"*{suffix}")):
+            if format_name == "yolo" and annotation_file.name.casefold() == "classes.txt":
+                continue
+            annotation_key = self._normalized_relative_name(
+                annotation_file.relative_to(detected.annotation_dir).with_suffix("").as_posix()
+            )
+            if annotation_key not in image_keys:
+                orphans.append(annotation_file)
+        return orphans
 
     def _on_scan_progress(self, done: int, total: int, useless_count: int) -> None:
         percent = int(done / total * 100) if total else 100
@@ -408,30 +488,81 @@ class CleanupDialog(QDialog):
 
         # Summary line first, then one tagged line per file so the report can
         # be checked verbatim against the folder.
+        findings = self._validation_lines(
+            payload.get("plan"), str(payload.get("validation_error", "") or ""),
+        )
         summary = self._summary_line(total, self._scan_useful, len(useless))
-        if not (useless or orphans or problematic):
+        # "Nothing to clean" has to mean the whole report, not just the files
+        # this dialog would delete: a validator finding is work too.
+        if not (useless or orphans or problematic or findings):
             summary += "  [无需清理]" if not self.english else "  [Nothing to clean]"
         lines = [summary]
         lines += [f"[无标注] {p.name}" for p in useless]
         lines += [f"[孤立标注] {p.name}" for p in orphans]
         lines += [f"[异常] {p.name}" for p in problematic]
+        lines += findings
         self.result_label.setPlainText("\n".join(lines))
-        self.confirm_button.setEnabled(bool(useless or orphans))
+        # A validator finding is work too, and the repair pass rescans, so the
+        # button is live whenever the scan reported anything at all. Whether a
+        # click does something is the policy's business, not the scan's.
+        has_work = bool(useless or orphans or problematic or findings)
+        self.confirm_button.setEnabled(has_work)
         self.scan_button.setDefault(False)
-        if useless or orphans:
+        if has_work:
             set_confirm_button(self.confirm_button)
 
-    def _trash(self, path: Path) -> bool:
-        """Recycle bin first, plain unlink as fallback; returns success."""
-        try:
-            try:
-                from send2trash import send2trash
-                send2trash(str(path))
-            except ImportError:
-                path.unlink(missing_ok=True)
-            return True
-        except OSError:
-            return False
+    def _severity_name(self, severity: Severity) -> str:
+        if self.english:
+            return {
+                Severity.STRUCTURAL: "structural",
+                Severity.REVIEW: "review",
+                Severity.INFO: "info",
+            }[severity]
+        return {
+            Severity.STRUCTURAL: "结构",
+            Severity.REVIEW: "待确认",
+            Severity.INFO: "提示",
+        }[severity]
+
+    def _validation_lines(self, plan, error: str) -> list[str]:
+        """Render the validator's findings, grouped by rule.
+
+        Grouped rather than one line per finding: a real dataset produced
+        1235 findings for a single rule, which would bury every other line in
+        the pane. Each rule shows its count and one example file, so the
+        report stays checkable against the folder.
+        """
+        if error:
+            return [
+                (f"[校验失败] {error}\n其余检查已跳过，清理仍可进行。"
+                 if not self.english else
+                 f"[Validation failed] {error}\nRemaining checks were skipped; cleanup still works.")
+            ]
+        if plan is None or not plan.issues:
+            return []
+
+        grouped = plan.by_rule()
+        buckets: dict[Severity, list[tuple[str, int]]] = {
+            Severity.STRUCTURAL: [], Severity.REVIEW: [], Severity.INFO: [],
+        }
+        for rule, values in grouped.items():
+            buckets[RULES[rule].severity].append((rule, len(values)))
+
+        totals = "  ".join(
+            f"{self._severity_name(severity)} {sum(count for _rule, count in buckets[severity])}"
+            for severity in (Severity.STRUCTURAL, Severity.REVIEW, Severity.INFO)
+        )
+        lines = [
+            f"[校验] {totals}  [图片] {plan.total_images}"
+            if not self.english else
+            f"[Validation] {totals}  [Images] {plan.total_images}"
+        ]
+        for severity in (Severity.STRUCTURAL, Severity.REVIEW, Severity.INFO):
+            for rule, count in sorted(buckets[severity], key=lambda item: (-item[1], item[0])):
+                tag = RULES[rule].tag[1 if self.english else 0]
+                lines.append(f"[{tag}] {count}  ({rule})")
+                lines.append(f"    {grouped[rule][0].target.name}")
+        return lines
 
     @staticmethod
     def _normalized_relative_name(value) -> str:
@@ -485,91 +616,158 @@ class CleanupDialog(QDialog):
         except (OSError, ValueError):
             pass
 
+    def _policy(self) -> FixPolicy:
+        rules: set[str] = set()
+        if self.fix_structural.isChecked():
+            rules |= FixPolicy.structural().rules
+        if self.fix_quality.isChecked():
+            rules |= FixPolicy.quality_rules()
+        return FixPolicy.of(rules)
+
+    def _update_policy_detail(self) -> None:
+        structural = len(FixPolicy.structural().rules)
+        quality = len(FixPolicy.quality_rules())
+        if self.english:
+            text = (f"{structural} structural repairs, {quality} quality rules; "
+                    "files removed are backed up and the run is logged")
+        else:
+            text = (f"结构修复 {structural} 项，质量策略 {quality} 项；"
+                    "删除前自动备份，并生成清理清单")
+        self.policy_detail.setText(text)
+
     def _clean(self) -> None:
-        if not (self._to_delete_images or self._to_delete_annotations):
+        """Run the repair pass, then report what it did.
+
+        The deletion this dialog always did is now one rule among several:
+        the fixer additionally corrects the declared header of a file, drops
+        boxes the annotation policy rejects, and records every removal in a
+        backup and a manifest. It rescans between passes, so the cascade the
+        rules imply -- the last box goes, the image is now box-less, the image
+        goes -- plays out instead of being guessed in a single pass.
+        """
+        source = Path(self.source_path.text().strip())
+        if not source.is_dir():
             return
-        # The plan lists every file the cleanup will touch, so the progress
-        # counter's denominator matches the files the user sees deleted:
-        # unannotated images, their mirrored annotation files, then orphans.
-        plan: list[Path] = list(self._to_delete_images)
-        annotation_owner: dict[Path, Path] = {}
-        for path in self._to_delete_images:
-            annotation_file = self._annotation_file_for(path)
-            if annotation_file is not None and annotation_file.exists():
-                plan.append(annotation_file)
-                annotation_owner[annotation_file] = path
-        plan += self._to_delete_annotations
-        total = len(plan)
-        if not AppDialog.question("提示", f"确认清理 {total} 个文件？此操作不可恢复。", self):
+        policy = self._policy()
+        if not policy.rules:
+            AppDialog.information("提示", "没有勾选任何修复策略。", self)
+            return
+        try:
+            detected = DatasetDetector.detect(source)
+        except ValueError:
+            AppDialog.information("提示", "无法识别该数据集格式。", self)
             return
 
-        self.confirm_button.setEnabled(False)
-        self.log_view.clear()
-
-        def progress(done: int) -> None:
-            percent = int(done / total * 100) if total else 100
-            self.log_view.setPlainText(
-                f"[清理] {done}/{total}  {percent}%"
-                if not self.english else
-                f"[Clean] {done}/{total}  {percent}%"
-            )
-            QApplication.processEvents()  # keep the progress line live
-
-        progress(0)
-        cleaned: list[Path] = []
-        failed: list[Path] = []
-        image_delete_succeeded: dict[Path, bool] = {}
-        image_targets = set(self._to_delete_images)
-        for done, path in enumerate(plan, start=1):
-            owner = annotation_owner.get(path)
-            if owner is not None and not image_delete_succeeded.get(owner, False):
-                # Keep a mirrored annotation file when its image could not be
-                # removed. Deleting only one side makes the dataset less
-                # consistent than it was before cleanup.
-                failed.append(path)
-            else:
-                succeeded = self._trash(path)
-                (cleaned if succeeded else failed).append(path)
-                if path in image_targets:
-                    image_delete_succeeded[path] = succeeded
-            if done % 5 == 0 or done == total:
-                progress(done)
-
-        # COCO: drop JSON records only for images actually removed.
-        synced_note = ""
-        if self._format_name == "coco":
-            removed = {
-                path.relative_to(self._image_dir).as_posix()
-                for path in self._to_delete_images
-                if image_delete_succeeded.get(path, False)
-            }
-            self._sync_coco_json(removed)
-            synced_note = (
-                f"[已同步] annotations.json（移除 {len(removed)} 张图片的记录）"
-                if not self.english else
-                f"[Synced] annotations.json (removed records for {len(removed)} images)"
-            )
-
-        # Post-cleanup summary: unannotated images that failed to delete are
-        # the only ones left, so they keep the [无标注] count nonzero.
-        unannotated = set(self._to_delete_images)
-        leftover = sum(1 for path in failed if path in unannotated)
-        remaining_total = self._scan_total - (len(self._to_delete_images) - leftover)
-        summary = self._summary_line(remaining_total, self._scan_useful, leftover)
-        lines = [summary]
-        lines += [f"[已清理] {path.name}" for path in cleaned]
-        lines += [f"[失败] {path.name}" for path in failed]
-        if synced_note:
-            lines.append(synced_note)
-        lines.append(
-            f"[清理完成]  {summary}"
+        message = (
+            f"按当前策略修复 {source} ？\n\n"
+            f"结构修复：{'开' if self.fix_structural.isChecked() else '关'}\n"
+            f"质量策略：{'开' if self.fix_quality.isChecked() else '关'}\n\n"
+            "删除的文件会先备份，并生成清理清单。"
             if not self.english else
-            f"[Done]  {summary}"
+            f"Repair {source} with the current policy?\n\n"
+            f"Structural: {'on' if self.fix_structural.isChecked() else 'off'}\n"
+            f"Quality: {'on' if self.fix_quality.isChecked() else 'off'}\n\n"
+            "Removed files are backed up and the run is logged."
+        )
+        if not AppDialog.question("提示", message, self):
+            return
+
+        self._scanning = True
+        self.confirm_button.setEnabled(False)
+        self.scan_button.setEnabled(False)
+        self.log_view.setPlainText("[修复] …" if not self.english else "[Repair] …")
+        self._min_box_size = self.min_box_size.value()
+        threading.Thread(
+            target=self._clean_worker, args=(detected, policy), daemon=True,
+        ).start()
+
+    def _on_clean_progress(self, text: str) -> None:
+        self.log_view.setPlainText(f"[修复] {text}" if not self.english else f"[Repair] {text}")
+
+    def _clean_worker(self, detected, policy) -> None:
+        """Background repair; always emits, so the dialog never dead-ends."""
+        try:
+            report = fix_dataset(
+                detected.root,
+                presets=self.presets,
+                policy=policy,
+                detected=detected,
+                min_box_size=getattr(self, "_min_box_size", MIN_BOX_SIZE),
+                progress=lambda text: self.clean_progress.emit(text),
+            )
+        except Exception as exc:
+            self.clean_finished.emit({"error": f"{type(exc).__name__}: {exc}"})
+            return
+        self.clean_finished.emit({"report": report})
+
+    def _on_clean_finished(self, payload: object) -> None:
+        self._scanning = False
+        self.scan_button.setEnabled(True)
+        self.confirm_button.setEnabled(False)
+        if not isinstance(payload, dict) or "report" not in payload:
+            message = str(payload.get("error")) if isinstance(payload, dict) else str(payload)
+            self.log_view.setPlainText(
+                f"[失败] {message}" if not self.english else f"[Failed] {message}"
+            )
+            AppDialog.information("提示", f"修复失败：{message}", self)
+            return
+
+        report = payload["report"]
+        removed = report.removed
+        rewritten = report.rewritten
+
+        # Recomputed rather than derived from the report: the same fast check
+        # the scan uses, so the summary line after a repair means exactly what
+        # it meant before one.
+        source = Path(self.source_path.text().strip())
+        total = useful = useless = 0
+        try:
+            detected = DatasetDetector.detect(source)
+            from src.services.image_service import SUPPORTED_IMAGE_EXTENSIONS
+            images = sorted(
+                path for path in detected.image_dir.rglob("*")
+                if path.is_file() and path.suffix.lower() in SUPPORTED_IMAGE_EXTENSIONS
+            )
+            total = len(images)
+            for image in images:
+                if self._image_annotation_state(detected.format_name, image, detected) == "empty":
+                    useless += 1
+                else:
+                    useful += 1
+        except ValueError:
+            pass
+        summary = self._summary_line(total, useful, useless)
+
+        counts: dict[str, int] = {}
+        for repair in report.repairs:
+            counts[repair.rule] = counts.get(repair.rule, 0) + 1
+
+        lines = [summary]
+        lines += [f"[已清理] {Path(entry['path']).name}" for entry in removed]
+        for rule, count in sorted(counts.items(), key=lambda item: (-item[1], item[0])):
+            tag = RULES[rule].tag[1 if self.english else 0]
+            lines.append(
+                f"[修复] {tag} {count}  ({rule})" if not self.english
+                else f"[Repaired] {tag} {count}  ({rule})"
+            )
+        if rewritten:
+            lines.append(
+                f"[已改写] {len(rewritten)} 个标注文件（已备份原文件）" if not self.english
+                else f"[Rewritten] {len(rewritten)} annotation files (originals backed up)"
+            )
+        if report.backup_dir is not None:
+            lines.append(
+                f"[备份] {report.backup_dir}" if not self.english
+                else f"[Backup] {report.backup_dir}"
+            )
+        lines += [f"[失败] {error}" for error in report.errors]
+        lines.append(
+            f"[清理完成]  {summary}" if not self.english else f"[Done]  {summary}"
         )
         self.log_view.setPlainText("\n".join(lines))
-        AppDialog.information("提示", f"已清理 {len(cleaned)}/{total} 个文件，详见下方日志。", self)
         self.accept()
 
     @property
     def cleaned_source(self) -> str:
         return self.source_path.text().strip()
+

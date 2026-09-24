@@ -34,7 +34,8 @@ class _LegacyShortcutsDialog(QDialog):
             ("Ctrl+-", "图片缩小"), ("Ctrl+0", "适应画布"), ("W", "启用绘制"),
             ("Ctrl+L+G", "标签分组"), ("Ctrl+K+G", "点位类型"), ("Ctrl + A + S", "参数设置"),
             ("Ctrl+I+F", "图片筛选"), ("Ctrl+C+A", "标注辅助"),
-            ("Ctrl+D+S", "数据统计"), ("Ctrl+D+C", "数据转换"), ("Ctrl+A+L", "自动标注"),
+            ("Ctrl+T+S", "数据统计"), ("Ctrl+D+C", "数据转换"), ("Ctrl+A+L", "自动标注"),
+            ("Ctrl+V+F", "视频提帧"), ("Ctrl+D+S", "数据合成"),
             ("Delete / Backspace", "删除选中标注"), ("Esc", "取消当前绘制"),
         ])
         self.setLayout(layout)
@@ -55,7 +56,7 @@ class _LegacyAboutDialog(QDialog):
             ("功能", "六种数据集合任务：YOLO 检测/分割/关键点/旋转框、Pascal VOC、COCO"),
             ("标注", "支持矩形、正方形、多边形绘制、拖拽调整与快捷操作"),
             ("能力", "工作空间式新建向导、大数据集合秒开、ONNX 自动标注、批量转换与统计"),
-            ("版本", "v1.0.0"),
+            ("版本", "v1.0.1"),
             ("作者", "RelinRan"),
             ("GitHub", "https://github.com/RelinRan"),
             ("Email", "relinran@foxmail.com"),
@@ -67,85 +68,77 @@ class ShortcutsDialog(QDialog):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         english = getattr(getattr(parent, "settings", None), "language", "zh_CN") == "en_US"
-        self.setWindowTitle("Shortcuts" if english else "快捷按键")
-        self.setFixedWidth(400)
-        if english:
-            rows = [
-                ("Ctrl+N", "New dataset"), ("Ctrl+O", "Open"), ("Ctrl+H", "History"),
-                ("Ctrl+S", "Save"), ("Ctrl+Q", "Exit"),
-                ("A / Up", "Previous image"), ("D / Down", "Next image"),
-                ("Mouse wheel", "Zoom toward cursor"), ("Ctrl+0", "Fit canvas"),
-                ("Ctrl++ / Ctrl+-", "Zoom in / out"), ("Zoom persists", "Kept across images; Ctrl+0 resets"),
-                ("W", "Toggle drawing"), ("1-9", "Pick bound label"), ("Ctrl+1-9", "Bind selected label to key"),
-                ("Shift + drag", "Constrain square"),
-                ("Enter / double click", "Finish polygon or keypoints"),
-                ("Backspace", "Remove last point while drawing"),
-                ("Esc", "Drop current shape, then exit drawing"),
-                ("Ctrl+Z / Ctrl+Y", "Undo / redo"),
-                ("Delete / Backspace", "Delete selected annotation"),
-                ("Ctrl+L+G", "Label groups"), ("Ctrl+K+G", "Keypoint types"), ("Ctrl+A+S", "Settings"),
-                ("Ctrl+I+F", "File filter"), ("Ctrl+C+A", "Annotation assist"),
-                ("Ctrl+D+S", "Statistics"), ("Ctrl+D+C", "Dataset conversion"),
-                ("Ctrl+A+L", "Auto labeling"),
-            ]
-        else:
-            rows = [
-                ("Ctrl+N", "新建数据集"), ("Ctrl+O", "打开"), ("Ctrl+H", "历史"),
-                ("Ctrl+S", "保存"), ("Ctrl+Q", "退出"),
-                ("A / ↑", "上张图片"), ("D / ↓", "下张图片"),
-                ("鼠标滚轮", "缩放画布（以光标为锚点）"), ("Ctrl+0", "适应画布"),
-                ("Ctrl++ / Ctrl+-", "放大 / 缩小"), ("缩放保持", "换图不重置；Ctrl+0 重置"),
-                ("W", "启用 / 退出绘制"), ("1-9", "选择绑定标签"), ("Ctrl+1-9", "绑定当前标签到该键"),
-                ("Shift + 拖拽", "画正方形"),
-                ("Enter / 双击", "完成多边形 / 关键点"),
-                ("Backspace", "绘制中撤销上一点"),
-                ("Esc", "取消当前形状，再按退出绘制"),
-                ("Ctrl+Z / Ctrl+Y", "撤销 / 重做"),
-                ("Delete / Backspace", "删除选中标注"),
-                ("Ctrl+L+G", "标签分组"), ("Ctrl+K+G", "点位类型"), ("Ctrl+A+S", "参数设置"),
-                ("Ctrl+I+F", "文件筛选"), ("Ctrl+C+A", "标注辅助"),
-                ("Ctrl+D+S", "数据统计"), ("Ctrl+D+C", "数据转换"),
-                ("Ctrl+A+L", "自动标注"),
-            ]
-        self.setLayout(_table_layout(rows, spacing=7))
+        self.setWindowTitle("Shortcuts" if english else "\u5feb\u6377\u6309\u952e")
+        self.setFixedWidth(420)
+        en_rows = [
+            ("Ctrl+N", "New dataset"), ("Ctrl+O", "Open dataset"), ("Ctrl+H", "History"),
+            ("Ctrl+S", "Save"), ("Ctrl+Q", "Exit"),
+            ("A / Up", "Previous image"), ("D / Down", "Next image"),
+            ("Mouse wheel", "Zoom toward cursor"), ("Ctrl+0", "Fit canvas"),
+            ("Ctrl++ / Ctrl+-", "Zoom in / out"), ("W", "Toggle drawing"),
+            ("1-9", "Select bound label"), ("Ctrl+1-9", "Bind selected label"),
+            ("Shift + drag", "Constrain square"),
+            ("Enter / double click", "Finish polygon or keypoints"),
+            ("Backspace", "Remove last point while drawing"),
+            ("Esc", "Cancel current shape / exit drawing"),
+            ("Ctrl+Z / Ctrl+Y", "Undo / redo"),
+            ("Delete", "Delete selected annotation"),
+            ("Ctrl+L+G", "Label groups"), ("Ctrl+K+G", "Keypoint types"),
+            ("Ctrl+A+S", "Settings"), ("Ctrl+I+F", "File filter"), ("Ctrl+C+A", "Annotation assist"),
+            ("Ctrl+T+S", "Statistics"), ("Ctrl+D+C", "Dataset conversion"),
+            ("Ctrl+V+F", "Extract video frames"), ("Ctrl+D+S", "Synthesize dataset"),
+            ("Ctrl+D+P", "Compare dataset"),
+            ("Ctrl+A+L", "Auto labeling"),
+        ]
+        zh_rows = [
+            ("Ctrl+N", "\u65b0\u5efa\u6570\u636e\u96c6"), ("Ctrl+O", "\u6253\u5f00\u6570\u636e\u96c6"), ("Ctrl+H", "\u5386\u53f2"),
+            ("Ctrl+S", "\u4fdd\u5b58"), ("Ctrl+Q", "\u9000\u51fa"),
+            ("A / \u2191", "\u4e0a\u4e00\u5f20\u56fe\u7247"), ("D / \u2193", "\u4e0b\u4e00\u5f20\u56fe\u7247"),
+            ("\u9f20\u6807\u6eda\u8f6e", "\u4ee5\u5149\u6807\u4e3a\u4e2d\u5fc3\u7f29\u653e"), ("Ctrl+0", "\u9002\u914d\u753b\u5e03"),
+            ("Ctrl++ / Ctrl+-", "\u653e\u5927 / \u7f29\u5c0f"), ("W", "\u5207\u6362\u7ed8\u5236\u72b6\u6001"),
+            ("1-9", "\u9009\u62e9\u7ed1\u5b9a\u6807\u7b7e"), ("Ctrl+1-9", "\u7ed1\u5b9a\u5f53\u524d\u6807\u7b7e"),
+            ("Shift + \u62d6\u52a8", "\u7ed8\u5236\u6b63\u65b9\u5f62"),
+            ("Enter / \u53cc\u51fb", "\u5b8c\u6210\u591a\u8fb9\u5f62\u6216\u5173\u952e\u70b9"),
+            ("Backspace", "\u7ed8\u5236\u65f6\u64a4\u9500\u4e0a\u4e00\u4e2a\u70b9"),
+            ("Esc", "\u53d6\u6d88\u5f53\u524d\u56fe\u5f62 / \u9000\u51fa\u7ed8\u5236"),
+            ("Ctrl+Z / Ctrl+Y", "\u64a4\u9500 / \u91cd\u505a"),
+            ("Delete", "\u5220\u9664\u9009\u4e2d\u6807\u6ce8"),
+            ("Ctrl+L+G", "\u6807\u7b7e\u5206\u7ec4"), ("Ctrl+K+G", "\u5173\u952e\u70b9\u7c7b\u578b"),
+            ("Ctrl+A+S", "\u53c2\u6570\u8bbe\u7f6e"), ("Ctrl+I+F", "\u6587\u4ef6\u7b5b\u9009"), ("Ctrl+C+A", "\u6807\u6ce8\u8f85\u52a9"),
+            ("Ctrl+T+S", "\u6570\u636e\u7edf\u8ba1"), ("Ctrl+D+C", "\u6570\u636e\u8f6c\u6362"),
+            ("Ctrl+V+F", "\u89c6\u9891\u63d0\u5e27"), ("Ctrl+D+S", "\u6570\u636e\u5408\u6210"),
+            ("Ctrl+D+P", "\u6570\u636e\u5bf9\u6bd4"), ("Ctrl+A+L", "\u81ea\u52a8\u6807\u6ce8"),
+        ]
+        self.setLayout(_table_layout(en_rows if english else zh_rows, spacing=7))
 
 
 class AboutDialog(QDialog):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         english = getattr(getattr(parent, "settings", None), "language", "zh_CN") == "en_US"
-        self.setWindowTitle("About Software" if english else "关于软件")
-        self.setMinimumWidth(480)
+        self.setWindowTitle("About Software" if english else "\u5173\u4e8e\u8f6f\u4ef6")
+        self.setMinimumWidth(500)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 18, 20, 18)
         title = QLabel("ModelLabeling")
         title.setObjectName("panelTitle")
         layout.addWidget(title)
-        rows = (
-            [
-                ("Product", "Desktop image annotation workbench"),
-                ("Features", "Six dataset tasks: YOLO detect/segment/pose/OBB, Pascal VOC, COCO"),
-                ("Annotation", "Rectangle, square, polygon, rotated box, keypoints; undo/redo and continuous drawing"),
-                ("Capabilities", "Workspace dataset wizard, SQLite index for large sets, ONNX auto labeling, conversion, statistics"),
-                ("Version", "v1.0.0"),
-                ("Author", "RelinRan"),
-                ("GitHub", "https://github.com/RelinRan"),
-                ("Email", "relinran@foxmail.com"),
-            ]
-            if english
-            else [
-                ("产品", "桌面端图像标注工作台"),
-                ("功能", "六种数据集合任务：YOLO 检测/分割/关键点/旋转框、Pascal VOC、COCO"),
-                ("标注", "矩形、正方形、多边形、旋转框、关键点五种方式；撤销重做与连续标注"),
-                ("能力", "工作空间式新建向导、大数据集合秒开、ONNX 自动标注、批量转换与统计"),
-                ("版本", "v1.0.0"),
-                ("作者", "RelinRan"),
-                ("GitHub", "https://github.com/RelinRan"),
-                ("邮箱", "relinran@foxmail.com"),
-            ]
-        )
+        rows = ([
+            ("Product", "Desktop image annotation workbench"),
+            ("Formats", "YOLO detection / segmentation / pose / OBB, Pascal VOC, COCO"),
+            ("Annotation", "Rectangle, square, polygon, rotated box, keypoints; undo/redo and continuous drawing"),
+            ("Tools", "Dataset wizard, large-dataset indexing, ONNX auto labeling, conversion, statistics, video frame extraction and dataset synthesis"),
+            ("Version", "v1.0.1"), ("Author", "RelinRan"),
+            ("GitHub", "https://github.com/RelinRan"), ("Email", "relinran@foxmail.com"),
+        ] if english else [
+            ("\u4ea7\u54c1", "\u684c\u9762\u7aef\u56fe\u50cf\u6807\u6ce8\u5de5\u4f5c\u53f0"),
+            ("\u6570\u636e\u683c\u5f0f", "YOLO \u68c0\u6d4b / \u5206\u5272 / \u5173\u952e\u70b9 / \u65cb\u8f6c\u6846\u3001Pascal VOC\u3001COCO"),
+            ("\u6807\u6ce8", "\u77e9\u5f62\u3001\u6b63\u65b9\u5f62\u3001\u591a\u8fb9\u5f62\u3001\u65cb\u8f6c\u6846\u3001\u5173\u952e\u70b9\uff1b\u652f\u6301\u64a4\u9500\u91cd\u505a\u548c\u8fde\u7eed\u7ed8\u5236"),
+            ("\u529f\u80fd", "\u6570\u636e\u96c6\u521b\u5efa\u5411\u5bfc\u3001\u5927\u6570\u636e\u96c6\u7d22\u5f15\u3001ONNX \u81ea\u52a8\u6807\u6ce8\u3001\u683c\u5f0f\u8f6c\u6362\u3001\u6570\u636e\u7edf\u8ba1\u3001\u89c6\u9891\u63d0\u5e27\u4e0e\u6570\u636e\u5408\u6210"),
+            ("\u7248\u672c", "v1.0.1"), ("\u4f5c\u8005", "RelinRan"),
+            ("GitHub", "https://github.com/RelinRan"), ("\u90ae\u7bb1", "relinran@foxmail.com"),
+        ])
         layout.addLayout(_table_layout(rows))
-
 
 class UsageGuideDialog(QDialog):
     """Full user manual: quick start, annotation operations, and the dataset
@@ -154,8 +147,8 @@ class UsageGuideDialog(QDialog):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         english = getattr(getattr(parent, "settings", None), "language", "zh_CN") == "en_US"
-        self.setWindowTitle("User Guide" if english else "使用说明")
-        self.resize(940, 700)
+        self.setWindowTitle("User Guide" if english else "\u4f7f\u7528\u8bf4\u660e")
+        self.resize(700, 420)
 
         sections = self._sections_english() if english else self._sections_chinese()
         self.categories = QListWidget()
@@ -198,130 +191,41 @@ class UsageGuideDialog(QDialog):
     @staticmethod
     def _sections_chinese() -> list[tuple[str, str]]:
         return [
-            ("快速上手", """快速上手（三步开始标注）
+            ("\u5feb\u901f\u5f00\u59cb", """ModelLabeling \u7528\u4e8e\u56fe\u50cf\u6570\u636e\u96c6\u6d4f\u89c8\u4e0e\u6807\u6ce8\u3002
 
-第一步  打开或新建数据集
-  · 打开 (Ctrl+O)：选择数据集根目录，格式自动识别
-  · 新建 (Ctrl+N)：已有图片文件夹时使用，选择目标格式后
-    自动创建标准目录结构（不移动、不修改任何图片），
-    并直接打开开始标注
+1. \u6253\u5f00\u73b0\u6709\u6570\u636e\u96c6 (Ctrl+O)\uff0c\u6216\u4f7f\u7528\u65b0\u5efa\u6570\u636e\u96c6 (Ctrl+N) \u521b\u5efa\u6807\u51c6\u76ee\u5f55\u3002
+2. \u5728\u753b\u5e03\u5de6\u4e0a\u89d2\u9009\u62e9\u77e9\u5f62\u3001\u6b63\u65b9\u5f62\u3001\u591a\u8fb9\u5f62\u3001\u65cb\u8f6c\u6846\u6216\u5173\u952e\u70b9\u6807\u6ce8\u3002
+3. \u4f7f\u7528 A/D \u6216\u65b9\u5411\u952e\u5207\u6362\u56fe\u7247\uff1b\u6807\u6ce8\u81ea\u52a8\u4fdd\u5b58\u3002
+4. \u4f7f\u7528 Ctrl+Z / Ctrl+Y \u64a4\u9500 / \u91cd\u505a\u3002
 
-第二步  选择标注方式
-  · 画布左上角下拉框选择：矩形 / 正方形 / 多边形 / 旋转框 / 关键点位
-  · 只显示当前数据集支持的方式
-  · 选中后在右侧标签面板点选标签（可选，默认标签可用）
+\u652f\u6301 YOLO \u68c0\u6d4b\u3001\u5206\u5272\u3001Pose\u3001OBB\uff0cPascal VOC \u548c COCO \u6570\u636e\u96c6\u3002"""),
+            ("\u6807\u6ce8\u4e0e\u5feb\u6377\u952e", """\u7ed8\u5236\u65b9\u5f0f
+  \u77e9\u5f62 / \u6b63\u65b9\u5f62\uff1a\u6309\u4f4f\u5de6\u952e\u62d6\u52a8
+  \u591a\u8fb9\u5f62\uff1a\u9010\u70b9\u70b9\u51fb\uff0c\u53cc\u51fb\u6216 Enter \u7ed3\u675f
+  \u65cb\u8f6c\u6846\uff1a\u5148\u62d6\u51fa\u6846\uff0c\u518d\u62d6\u52a8\u65cb\u8f6c\u624b\u67c4
+  \u5173\u952e\u70b9\uff1a\u6309\u5f53\u524d\u70b9\u4f4d\u7c7b\u578b\u9010\u4e2a\u70b9\u51fb
+  Esc \u53d6\u6d88\u5f53\u524d\u56fe\u5f62\uff1bDelete \u5220\u9664\u9009\u4e2d\u6807\u6ce8\u3002
 
-第三步  绘制与保存
-  · 按各方式的常规操作绘制（详见"标注方式与操作"）
-  · 默认自动保存：绘制完成约 0.3 秒后写入标注文件
-  · 底部状态栏实时显示 加载/统计/保存 进度
-
-小提示
-  · 第一次打开大数据集会建立索引，之后再打开会快很多
-  · 图片切换用 A/D 或 ↑/↓
-  · 误画了立即 Ctrl+Z 撤销
+\u5e38\u7528\u5feb\u6377\u952e
+  Ctrl+O \u6253\u5f00  |  Ctrl+S \u4fdd\u5b58  |  Ctrl+H \u5386\u53f2
+  Ctrl+L+G \u6807\u7b7e\u5206\u7ec4  |  Ctrl+K+G \u5173\u952e\u70b9\u7c7b\u578b
+  Ctrl+T+S \u6570\u636e\u7edf\u8ba1  |  Ctrl+D+C \u6570\u636e\u8f6c\u6362
+  Ctrl+A+L \u81ea\u52a8\u6807\u6ce8  |  Ctrl+A+S \u53c2\u6570\u8bbe\u7f6e
 """),
-            ("标注方式与操作", """标注方式与操作（主流常规操作）
+            ("\u89c6\u9891\u5de5\u5177\u4e0e\u6570\u636e\u96c6", """\u89c6\u9891\u63d0\u5e27 (Ctrl+V+F)
+  \u9009\u62e9\u89c6\u9891\u6839\u76ee\u5f55\uff08\u4f1a\u9012\u5f52\u626b\u63cf\u5b50\u76ee\u5f55\uff09\u3001\u5e27\u56fe\u8f93\u51fa\u76ee\u5f55\u548c\u62bd\u5e27\u9891\u7387\uff08\u9ed8\u8ba4 5 FPS\uff09\u3002
+  \u5904\u7406\u8fdb\u5ea6\u5728\u4e3b\u9875\u5e95\u90e8\u72b6\u6001\u680f\u53f3\u4fa7\u663e\u793a\uff0c\u5b8c\u6210\u540e\u4f1a\u663e\u793a\u7ed3\u679c\u63d0\u793a\u3002
 
-一、通用操作
-  选择方式后保持连续标注，画完立即可画下一个
-  Esc           第一次取消当前半成品，第二次退出绘制
-  右键(空白处)  退出绘制；点击已有标注弹出编辑对话框
-  Ctrl+Z / Ctrl+Y   撤销 / 重做（绘制、删除、移动、改标签均可撤销）
-  Delete / Backspace 删除选中标注
-  双击标注      打开编辑对话框（改标签、关键点坐标与可见性）
+\u6570\u636e\u5408\u6210 (Ctrl+D+S)
+  \u9009\u62e9\u5e27\u56fe\u6570\u636e\u76ee\u5f55\u3001\u5408\u6210\u8f93\u51fa\u76ee\u5f55\u53ca COCO / YOLO / Pascal VOC \u683c\u5f0f\u3002
+  \u5efa\u8bae\u8f93\u51fa\u76ee\u5f55\u4e3a\u7a7a\uff0c\u907f\u514d\u8986\u76d6\u73b0\u6709\u6570\u636e\u3002
+  \u5408\u6210\u8fdb\u5ea6\u4f1a\u663e\u793a\u5728\u4e3b\u9875\u5e95\u90e8\u72b6\u6001\u680f\u53f3\u4fa7\uff0c\u5b8c\u6210\u540e\u663e\u793a\u6210\u529f\u3001\u5931\u8d25\u548c\u8df3\u8fc7\u6570\u91cf\u3002
 
-二、矩形
-  按住左键拖拽画出（任意方向）
-  编辑：框内拖动移动，四角手柄缩放
-  按住 Shift 拖拽 = 临时画正方形
-
-三、正方形
-  拖拽时自动锁定宽高相等，其余同矩形
-
-四、多边形
-  逐点左键单击；双击或 Enter 闭合；右键闭合
-  Backspace 撤销上一个点；Esc 取消当前形状
-  编辑：选中后拖动顶点手柄
-
-五、旋转框 (YOLO OBB)
-  像矩形一样拖拽画出（初始水平）
-  选中后出现绿色旋转手柄，拖动绕中心旋转
-  按住 Shift 旋转按 15° 吸附
-  编辑：框内拖动移动
-
-六、关键点位 (YOLO Pose / COCO)
-  逐点左键单击，点满自动完成；双击或 Enter 提前完成
-  画布上"点位数"框可修改数量（17=COCO 人体官方点位，
-  其他数量自动命名 kpt_1..kpt_N，修改会写入 data.yaml）
-  右键点位循环切换可见性：可见(2) → 未标注(0) → 遮挡(1)
-  编辑：拖动点位；编辑对话框可改坐标和可见性
-
-七、辅助
-  W          快速启用/退出上次使用的标注方式
-  鼠标滚轮   缩放画布（以光标位置为锚点）
-  1-9        选择绑定该键的标签；Ctrl+1-9 把当前选中标签绑定到该键
-  缩放保持   换图时保留缩放级别；Ctrl+0 适应画布并重置
-  Ctrl+C+A   标注辅助线设置
-
-  启动时自动恢复上次的数据集与最后浏览的图片，
-  可在 参数设置 → 通用设置 中改为空画布启动。
-"""),
-            ("数据集格式说明", FormatGuideDialog._chinese_content()),
-            ("新建数据集向导", """新建数据集向导 (Ctrl+N)
-
-像编程管理项目一样管理数据集：数据集统一放在工作空间里，
-图片来源只是素材，真正的数据集创建在工作空间的子目录中。
-
-操作步骤
-  1. 文件菜单 → 新建 (Ctrl+N)
-  2. 选择工作空间（记忆上次选择，多个数据集可共处一个工作空间）
-  3. 输入数据集名称（同工作空间内不能重名）
-  4. 可选：选择数据来源（图片目录、数据集目录）
-       · 普通图片文件夹 → 图片复制进新数据集的 images/
-       · 已是标准数据集 → 图片和标注文件一并导入
-       · 不填 → 创建空数据集，稍后自行放入图片
-  5. 选择标注格式：
-       YOLO 检测 / 分割 / 关键点 / 旋转框，Pascal VOC，COCO
-  6. 可选：标签类别（逗号分隔）；关键点格式可设点位数
-  7. 点击"创建"
-
-会发生什么
-  · 创建 工作空间/名称/ 数据集目录，含标准结构
-    （images/ + labels/ + data.yaml，或 Annotations/、annotations/）
-  · 图片复制进来（嵌套子目录会拍平，重名自动加前缀）
-  · 源文件夹内容不受任何影响
-  · 同名数据集会被拒绝，不会覆盖
-  · 创建完成自动打开，工作空间位置已记住
-"""),
-            ("更多功能", """更多功能
-
-标签分组 (Ctrl+L+G)
-  维护可复用的标签模板库，跨数据集保留
-
-点位类型 (Ctrl+K+G)
-  预定义关键点的点数与名称；画制关键点前在画布左上角选择类型即可采用其点位名称
-
-文件筛选 (Ctrl+I+F)
-  按文件名、标注状态（已标/未标）、标签过滤图片列表
-
-数据统计 (Ctrl+D+S)
-  查看总标注数、各类别分布、标注进度
-
-数据转换 (Ctrl+D+C)
-  YOLO / VOC / COCO 互相批量转换
-
-自动标注 (Ctrl+A+L)
-  需在参数设置中选择 YOLO 模型；
-  支持官方 YOLO 检测/Pose 模型，可中途停止
-
-参数设置 (Ctrl+A+S)
-  标注方式、线宽字号线宽、保存模式、语言等
-
-快捷键完整列表见 帮助 → 快捷按键
-"""),
+\u5176\u4ed6\u5de5\u5177
+  Ctrl+I+F \u6587\u4ef6\u7b5b\u9009  |  Ctrl+C+A \u6807\u6ce8\u8f85\u52a9
+  Ctrl+T+S \u6570\u636e\u7edf\u8ba1  |  Ctrl+A+L \u81ea\u52a8\u6807\u6ce8
+""")
         ]
-
     @staticmethod
     def _sections_english() -> list[tuple[str, str]]:
         return [
@@ -436,11 +340,17 @@ Keypoint types (Ctrl+K+G)
 File filter (Ctrl+I+F)
   Filter the image list by name, status, or label
 
-Statistics (Ctrl+D+S)
+Statistics (Ctrl+T+S)
   Label counts, per-class distribution, progress
 
 Conversion (Ctrl+D+C)
   Batch convert between YOLO / VOC / COCO
+
+Extract video frames (Ctrl+V+F)
+  Recursively scan a video folder and save sampled frames at the selected FPS. Progress appears at the bottom-right of the main status bar; a completion summary is shown when done.
+
+Synthesize dataset (Ctrl+D+S)
+  Build a COCO, YOLO, or Pascal VOC dataset from a frame folder; output must be empty. Progress appears at the bottom-right of the main status bar, followed by a readable success/failure/skip summary.
 
 Auto labeling (Ctrl+A+L)
   Requires an ONNX model in Application Settings; official

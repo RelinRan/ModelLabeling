@@ -158,7 +158,7 @@ class PresetPanel(QWidget):
             chip_row = QHBoxLayout(card); chip_row.setContentsMargins(0, 0, 9, 0); chip_row.setSpacing(0)
             chip_row.addStretch(1); chip_row.addWidget(id_chip); card.setObjectName("labelCard"); card.setFixedHeight(36); card.setMinimumWidth(0); card.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed); card.setCursor(Qt.CursorShape.PointingHandCursor); card.setProperty("selected", False); card.setProperty("preset_index", index)
             card.setStyleSheet("QPushButton { background: #34373C; color: #E6E9ED; border: 1px solid #45494F; border-left: 3px solid #45494F; border-radius: 5px; padding: 2px 6px; font-weight: 600; text-align: left; padding-left: 9px; padding-right: 26px; } QPushButton:hover { background: #3C4046; border-left: 3px solid #6A84B8; } QPushButton[selected=\"true\"] { background: #31436B; border: 1px solid #6A84B8; border-left: 3px solid #7FA3E0; color: #FFFFFF; }")
-            card.clicked.connect(lambda checked=False, row=index: self.list.setCurrentRow(row)); card.installEventFilter(self)
+            card.clicked.connect(lambda checked=False, row=index: self._toggle_label(row)); card.installEventFilter(self)
             row, column = divmod(index, columns); self.grid.addWidget(card, row, column)
 
     def resizeEvent(self, event) -> None:
@@ -170,11 +170,19 @@ class PresetPanel(QWidget):
     def eventFilter(self, watched, event) -> bool:
         kind = event.type()
         if watched.property("preset_index") is not None and kind == QEvent.Type.MouseButtonDblClick: self.edit_preset(int(watched.property("preset_index"))); return True
-        if watched in {self.label_frame, self.grid_host, self.label_scroll.viewport()} and kind == QEvent.Type.MouseButtonPress: self.clear_selection()
         return super().eventFilter(watched, event)
 
     def _selected(self, row: int) -> None:
         if 0 <= row < len(self.presets): self.select_label(self.presets[row].name, emit=False); self.presetSelected.emit(self.presets[row].name)
+
+    def _toggle_label(self, row: int) -> None:
+        """Toggle a card; empty panel clicks do not clear the current card."""
+        if not 0 <= row < len(self.presets):
+            return
+        if self._selected_name == self.presets[row].name:
+            self.clear_selection()
+            return
+        self.list.setCurrentRow(row)
 
     def select_label(self, label: str, emit: bool = False) -> None:
         self._selected_name = label

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 import ast
@@ -9,6 +10,68 @@ from PIL import Image
 from PySide6.QtCore import QPointF
 
 from src.models.annotation import Annotation, Keypoint, LabelPreset, ShapeType, label_color
+
+#: Letterbox fill colour. Ultralytics pads with 114, and a model is trained on
+#: exactly that colour, so a different pad is a different input distribution.
+PAD_VALUE = 114
+
+
+@dataclass(frozen=True)
+class _SourceMap:
+    """Where a coordinate in the input tensor lands in the source image.
+
+    The two ways a YOLO export can be fed differ only in this step. A plain
+    resize stretches the image, so the two axes scale independently. A
+    letterbox keeps the aspect ratio and pads the remainder, so both axes share
+    one scale and the padding has to be taken back out. Both are an affine map,
+    which is why the decoding paths below do not need to know which was used.
+    """
+
+    input_width: int
+    input_height: int
+    source_width: int
+    source_height: int
+    scale_x: float
+    scale_y: float
+    offset_x: float = 0.0
+    offset_y: float = 0.0
+
+    def x(self, value: float) -> float:
+        return value * self.scale_x + self.offset_x
+
+    def y(self, value: float) -> float:
+        return value * self.scale_y + self.offset_y
+
+    def point(self, x: float, y: float) -> QPointF:
+        return QPointF(
+            max(0.0, min(float(self.source_width), self.x(x))),
+            max(0.0, min(float(self.source_height), self.y(y))),
+        )
+
+
+def _letterbox(image: Image.Image, width: int, height: int) -> tuple[np.ndarray, _SourceMap]:
+    """Scale ``image`` to fit ``width`` x ``height``, pad the rest, and map back.
+
+    The tensor and its coordinate map are produced together because they have
+    to agree: the padding is an integer on each side, as in Ultralytics, and
+    the same integer has to be the one the map subtracts. Computed separately,
+    a rounded paste and an unrounded mapping would put every box a fraction of
+    a pixel out for no reason.
+    """
+    source_width, source_height = image.size
+    scale = min(width / source_width, height / source_height)
+    scaled_width = max(1, min(width, round(source_width * scale)))
+    scaled_height = max(1, min(height, round(source_height * scale)))
+    pad_x = (width - scaled_width) // 2
+    pad_y = (height - scaled_height) // 2
+    canvas = Image.new("RGB", (width, height), (PAD_VALUE, PAD_VALUE, PAD_VALUE))
+    canvas.paste(image.resize((scaled_width, scaled_height), Image.BILINEAR), (pad_x, pad_y))
+    array = np.asarray(canvas, dtype=np.float32) / 255.0
+    source = _SourceMap(
+        width, height, source_width, source_height,
+        1.0 / scale, 1.0 / scale, -pad_x / scale, -pad_y / scale,
+    )
+    return np.transpose(array, (2, 0, 1))[None, ...], source
 
 
 class YoloOnnxDetector:
@@ -62,6 +125,7 @@ class YoloOnnxDetector:
         input_size: int | tuple[int, int] = 640,
         confidence_threshold: float = 0.25,
         nms_threshold: float = 0.45,
+        letterbox: bool = False,
     ) -> list[Annotation]:
         if self.session is None:
             raise RuntimeError("ONNX model is not loaded")
@@ -84,19 +148,25 @@ class YoloOnnxDetector:
                 input_height = graph_height
         input_width = max(1, int(input_width))
         input_height = max(1, int(input_height))
-        resized = rgb.resize((input_width, input_height))
-        array = np.asarray(resized, dtype=np.float32) / 255.0
-        array = np.transpose(array, (2, 0, 1))[None, ...]
+        if letterbox:
+            array, source = _letterbox(rgb, input_width, input_height)
+        else:
+            resized = rgb.resize((input_width, input_height))
+            array = np.asarray(resized, dtype=np.float32) / 255.0
+            array = np.transpose(array, (2, 0, 1))[None, ...]
+            source = _SourceMap(
+                input_width, input_height, original_width, original_height,
+                original_width / input_width, original_height / input_height,
+            )
         outputs = self.session.run(None, {input_name: array})
         output = outputs[0]
         if self.task == "pose":
-            return self._predict_pose(output, original_width, original_height, input_width, input_height, presets, confidence_threshold, nms_threshold)
+            return self._predict_pose(output, source, presets, confidence_threshold, nms_threshold)
         if self.task in {"segment", "segmentation"}:
             if len(outputs) < 2:
                 raise ValueError("YOLO Segmentation model must provide detection and prototype outputs")
             return self._predict_segmentation(
-                output, outputs[1], original_width, original_height,
-                input_width, input_height, presets,
+                output, outputs[1], source, presets,
                 confidence_threshold, nms_threshold,
             )
         rows = self._decode_output(np.asarray(output), len(presets))
@@ -112,21 +182,17 @@ class YoloOnnxDetector:
             # ONNX exports may return either input-pixel coordinates or
             # normalized coordinates. Normalize before mapping to the source image.
             if max(abs(x1), abs(y1), abs(x2), abs(y2)) <= 1.5:
-                x1, x2 = x1 * input_width, x2 * input_width
-                y1, y2 = y1 * input_height, y2 * input_height
-            sx = original_width / input_width
-            sy = original_height / input_height
-            left = max(0.0, min(float(original_width), x1 * sx))
-            top = max(0.0, min(float(original_height), y1 * sy))
-            right = max(0.0, min(float(original_width), x2 * sx))
-            bottom = max(0.0, min(float(original_height), y2 * sy))
-            if right <= left or bottom <= top:
+                x1, x2 = x1 * source.input_width, x2 * source.input_width
+                y1, y2 = y1 * source.input_height, y2 * source.input_height
+            top_left = source.point(x1, y1)
+            bottom_right = source.point(x2, y2)
+            if bottom_right.x() <= top_left.x() or bottom_right.y() <= top_left.y():
                 continue
             results.append(
                 Annotation(
                     ShapeType.RECTANGLE,
                     preset.name,
-                    [QPointF(left, top), QPointF(right, bottom)],
+                    [top_left, bottom_right],
                     color=label_color(preset.name),
                     confidence=score,
                     source="onnx",
@@ -138,10 +204,7 @@ class YoloOnnxDetector:
         self,
         output: np.ndarray,
         prototypes: np.ndarray,
-        original_width: int,
-        original_height: int,
-        input_width: int,
-        input_height: int,
+        source: _SourceMap,
         presets: list[LabelPreset],
         confidence_threshold: float,
         nms_threshold: float,
@@ -182,25 +245,29 @@ class YoloOnnxDetector:
             if score >= confidence_threshold and 0 <= class_id < len(presets):
                 candidates.append((x1, y1, x2, y2, float(score), class_id, np.asarray(coefficients)))
         selected = self._nms(candidates, nms_threshold)
-        sx, sy = original_width / input_width, original_height / input_height
         results = []
         flattened = proto.reshape(mask_channels, -1)
         for x1, y1, x2, y2, score, class_id, coefficients in selected:
             if max(abs(x1), abs(y1), abs(x2), abs(y2)) <= 1.5:
-                x1, x2 = x1 * input_width, x2 * input_width
-                y1, y2 = y1 * input_height, y2 * input_height
+                x1, x2 = x1 * source.input_width, x2 * source.input_width
+                y1, y2 = y1 * source.input_height, y2 * source.input_height
             logits = coefficients @ flattened
             mask = (1.0 / (1.0 + np.exp(-np.clip(logits, -80, 80)))).reshape(mask_height, mask_width)
-            mask = cv2.resize(mask, (input_width, input_height), interpolation=cv2.INTER_LINEAR)
+            mask = cv2.resize(
+                mask, (source.input_width, source.input_height), interpolation=cv2.INTER_LINEAR,
+            )
             binary = np.zeros_like(mask, dtype=np.uint8)
             left, top = max(0, int(x1)), max(0, int(y1))
-            right, bottom = min(input_width, int(np.ceil(x2))), min(input_height, int(np.ceil(y2)))
+            right = min(source.input_width, int(np.ceil(x2)))
+            bottom = min(source.input_height, int(np.ceil(y2)))
             if right <= left or bottom <= top:
                 continue
             binary[top:bottom, left:right] = (mask[top:bottom, left:right] >= 0.5).astype(np.uint8)
             contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            # ``point`` clamps: a contour can reach into the letterbox padding,
+            # and a vertex outside the image is not a polygon the app can show.
             parts = [
-                [QPointF(float(point[0][0]) * sx, float(point[0][1]) * sy) for point in contour]
+                [source.point(float(point[0][0]), float(point[0][1])) for point in contour]
                 for contour in contours
                 if len(contour) >= 3 and cv2.contourArea(contour) > 1.0
             ]
@@ -226,10 +293,7 @@ class YoloOnnxDetector:
     def _predict_pose(
         self,
         output: np.ndarray,
-        original_width: int,
-        original_height: int,
-        input_width: int,
-        input_height: int,
+        source: _SourceMap,
         presets: list[LabelPreset],
         confidence_threshold: float,
         nms_threshold: float,
@@ -263,8 +327,8 @@ class YoloOnnxDetector:
             for index in range(keypoint_count):
                 x, y, visibility = map(float, values[index * 3:index * 3 + 3])
                 if max(abs(x), abs(y)) <= 1.5:
-                    x *= input_width
-                    y *= input_height
+                    x *= source.input_width
+                    y *= source.input_height
                 visible = 2 if visibility >= 0.5 else 1 if visibility > 0 else 0
                 raw_keypoints.append((names[index] if index < len(names) else f"keypoint_{index}", x, y, visible))
             candidates.append((x1, y1, x2, y2, score, class_id, raw_keypoints))
@@ -272,22 +336,18 @@ class YoloOnnxDetector:
         results: list[Annotation] = []
         for x1, y1, x2, y2, score, class_id, raw_keypoints in selected:
             if max(abs(x1), abs(y1), abs(x2), abs(y2)) <= 1.5:
-                x1, x2 = x1 * input_width, x2 * input_width
-                y1, y2 = y1 * input_height, y2 * input_height
-            sx = original_width / input_width
-            sy = original_height / input_height
-            left = max(0.0, min(float(original_width), x1 * sx))
-            top = max(0.0, min(float(original_height), y1 * sy))
-            right = max(0.0, min(float(original_width), x2 * sx))
-            bottom = max(0.0, min(float(original_height), y2 * sy))
+                x1, x2 = x1 * source.input_width, x2 * source.input_width
+                y1, y2 = y1 * source.input_height, y2 * source.input_height
+            top_left = source.point(x1, y1)
+            bottom_right = source.point(x2, y2)
             keypoints = [
-                Keypoint(name, QPointF(max(0.0, min(float(original_width), x * sx)), max(0.0, min(float(original_height), y * sy))), visibility)
+                Keypoint(name, source.point(x, y), visibility)
                 for name, x, y, visibility in raw_keypoints
             ]
             results.append(Annotation(
                 ShapeType.KEYPOINT,
                 presets[class_id].name,
-                [QPointF(left, top), QPointF(right, bottom)],
+                [top_left, bottom_right],
                 color=label_color(presets[class_id].name),
                 confidence=score,
                 source="onnx",

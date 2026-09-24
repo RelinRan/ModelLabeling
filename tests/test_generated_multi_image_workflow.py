@@ -80,7 +80,7 @@ def _add_box(window, label="car", x=20, y=20):
     window.canvas.dirtyChanged.emit(True)
 
 
-def test_generated_dataset_multi_image_edit_cleanup_history_reload_compare(tmp_path, monkeypatch):
+def test_generated_dataset_multi_image_edit_cleanup_history_reload_compare(tmp_path, monkeypatch, run_cleanup):
     """Generate fresh data and verify edits survive cleanup, history, and reload."""
     app = QApplication.instance() or QApplication([])
     settings_ini = tmp_path / "settings.ini"
@@ -133,10 +133,11 @@ def test_generated_dataset_multi_image_edit_cleanup_history_reload_compare(tmp_p
 
         # Run the real cleanup dialog on the generated dataset.
         dialog = CleanupDialog(window.settings.label_presets, window, str(dataset), window.settings.language)
-        monkeypatch.setattr(dialog, "_trash", lambda path: (path.unlink(missing_ok=True), True)[1])
         dialog._start_scan()
         assert _wait(app, lambda: not dialog._scanning)
-        dialog._clean()
+        # c.jpg was cleared of its box above, so it is a box-less image and
+        # its removal is the quality rule the user has to switch on.
+        run_cleanup(dialog, quality=True)
         assert not (dataset / "images" / "c.jpg").exists()
         assert not (dataset / "labels" / "c.txt").exists()
         dialog.close()

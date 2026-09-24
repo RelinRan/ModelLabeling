@@ -26,6 +26,9 @@ class ConversionOptions:
     overwrite: bool = False
     source_task: str | None = None
     output_task: str | None = None
+    force_structured_output: bool = False
+    plain_image_source: bool = False
+    flatten_output: bool = False
 
 
 @dataclass
@@ -39,6 +42,16 @@ class ConversionReport:
         if self.errors is None:
             self.errors = []
 
+
+
+
+def _flatten_relative(relative: Path) -> Path:
+    """Flatten a nested source path while retaining enough context for uniqueness."""
+    if len(relative.parts) <= 1:
+        return relative
+    stem = "__".join(relative.with_suffix("").parts)
+    safe = "".join(character if character.isalnum() or character in "._-" else "_" for character in stem)
+    return Path(safe + relative.suffix)
 
 class ConversionService:
     def __init__(self, annotation_service: AnnotationService | None = None) -> None:
@@ -55,13 +68,16 @@ class ConversionService:
         output_format = self._canonical_format(options.output_format)
         source_task = options.source_task or ("coco" if source_format == "coco" else "voc" if source_format == "voc" else "yolo_detection")
         output_task = options.output_task or ("coco" if output_format == "coco" else "voc" if output_format == "voc" else "yolo_detection")
-        image_dir, annotation_dir, structured = self._resolve_source(options.source_path, source_format)
+        if options.plain_image_source:
+            image_dir, annotation_dir, structured = options.source_path, options.source_path, False
+        else:
+            image_dir, annotation_dir, structured = self._resolve_source(options.source_path, source_format)
         images = sorted(
             item for item in image_dir.rglob("*")
             if item.is_file() and item.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
         )
         presets = self._complete_presets(images, annotation_dir, source_format, options.presets, options.source_path)
-        structured_output = structured or output_format == "coco"
+        structured_output = structured or output_format == "coco" or options.force_structured_output
         if structured_output:
             if output_format == "yolo":
                 output_image_dir = options.output_path / "images"
@@ -112,11 +128,12 @@ class ConversionService:
                     if result.error:
                         raise ValueError(result.error)
                     relative = image_path.relative_to(image_dir)
+                    output_relative = _flatten_relative(relative) if options.flatten_output else relative
                     self.annotation_service.save_coco_record(
                         image_path, result.annotations, output_annotation_dir,
-                        presets, relative.as_posix(),
+                        presets, output_relative.as_posix(),
                     )
-                    output_image_path = output_image_dir / relative
+                    output_image_path = output_image_dir / output_relative
                     output_image_path.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(image_path, output_image_path)
                     report.succeeded += 1
@@ -141,7 +158,8 @@ class ConversionService:
                 break
             try:
                 relative = image_path.relative_to(image_dir)
-                target = None if output_format == "coco" else output_annotation_dir / relative.with_suffix(
+                output_relative = _flatten_relative(relative) if options.flatten_output else relative
+                target = None if output_format == "coco" else output_annotation_dir / output_relative.with_suffix(
                     ".xml" if output_format == "voc" else ".txt"
                 )
                 if target is not None and target.exists() and not options.overwrite:
@@ -160,7 +178,7 @@ class ConversionService:
                             elif schema != pose_schema:
                                 raise ValueError("inconsistent keypoint schema for YOLO Pose output")
                     output_settings = ProjectSettings(
-                        image_dir=image_dir,
+                        image_dir=(image_path.parent if options.flatten_output else image_dir),
                         annotation_format=output_format,
                         dataset_task=output_task,
                         annotation_dir=output_annotation_dir,
@@ -169,8 +187,18 @@ class ConversionService:
                     saved = self.annotation_service.save(image_path, result.annotations, output_annotation_dir, output_settings)
                     if not saved.ok:
                         raise OSError(saved.error or "conversion save failed")
+                    if options.flatten_output:
+                        generated = output_annotation_dir / image_path.with_suffix(
+                            ".xml" if output_format == "voc" else ".txt"
+                        ).name
+                        desired = output_annotation_dir / output_relative.with_suffix(
+                            ".xml" if output_format == "voc" else ".txt"
+                        )
+                        if generated != desired and generated.exists():
+                            desired.parent.mkdir(parents=True, exist_ok=True)
+                            generated.replace(desired)
                     if structured_output:
-                        output_image_path = output_image_dir / relative
+                        output_image_path = output_image_dir / output_relative
                         output_image_path.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copy2(image_path, output_image_path)
                     report.succeeded += 1

@@ -397,6 +397,44 @@ def test_voc_nested_layout_saves_annotation_beside_matching_branch(tmp_path):
     assert (annotation_dir / "train" / "sample.xml").exists()
 
 
+@pytest.mark.parametrize("mode,expected", [
+    ("RGB", 3),
+    ("RGBA", 4),
+    ("L", 1),
+    ("P", 3),   # palette: one band, but every reader materialises three
+])
+def test_voc_depth_declares_real_channels_not_extension_length(tmp_path, mode, expected):
+    """`<depth>` is a channel count.
+
+    It used to be written as ``len(path.suffix)``, so every ``.jpg`` the app
+    saved claimed ``<depth>4</depth>`` -- the length of ".jpg". A validator
+    reading the true channel count could only report 1235 files as broken.
+    """
+    import xml.etree.ElementTree as ET
+
+    image_dir = tmp_path / "JPEGImages"
+    annotation_dir = tmp_path / "Annotations"
+    image_dir.mkdir()
+    annotation_dir.mkdir()
+    image = image_dir / "sample.png"
+    Image.new(mode, (64, 64)).save(image)
+    settings = ProjectSettings(
+        image_dir=image_dir,
+        annotation_dir=annotation_dir,
+        annotation_format="voc",
+        dataset_task="voc",
+        label_presets=[LabelPreset("person", 0, "#00e5ff")],
+    )
+    annotation = Annotation(ShapeType.RECTANGLE, "person",
+                            [QPointF(10, 20), QPointF(40, 50)])
+
+    result = AnnotationService().save(image, [annotation], annotation_dir, settings)
+
+    assert result.ok, result.error
+    declared = ET.parse(annotation_dir / "sample.xml").getroot().findtext("size/depth")
+    assert declared == str(expected), f"{mode} declared depth={declared}"
+
+
 def test_invalid_polygon_and_nonfinite_coordinates_are_rejected():
     with pytest.raises(ValueError, match="at least three"):
         Annotation(

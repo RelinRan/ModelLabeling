@@ -140,7 +140,7 @@ def _snapshot(root: Path, presets: list[LabelPreset]):
     return result
 
 
-def test_generated_complex_chained_edit_filter_cleanup_convert_history_reload(tmp_path, monkeypatch):
+def test_generated_complex_chained_edit_filter_cleanup_convert_history_reload(tmp_path, monkeypatch, run_cleanup):
     """Exercise a generated dataset through a long, multi-feature GUI workflow."""
     app = QApplication.instance() or QApplication([])
     settings_ini = tmp_path / "settings.ini"
@@ -225,12 +225,14 @@ def test_generated_complex_chained_edit_filter_cleanup_convert_history_reload(tm
         assert before_cleanup["val/shared.jpg"] == [("person", ((20.0, 80.0), (70.0, 120.0)))]
 
         dialog = CleanupDialog(window.settings.label_presets, window, str(source), window.settings.language)
-        monkeypatch.setattr(dialog, "_trash", lambda path: (path.unlink(missing_ok=True), True)[1])
         dialog._start_scan()
         assert _wait(app, lambda: not dialog._scanning)
         assert sorted(path.relative_to(source).as_posix() for path in dialog._to_delete_images) == ["images/val/empty.jpg"]
         assert sorted(path.relative_to(source).as_posix() for path in dialog._to_delete_annotations) == ["labels/orphan.txt"]
-        dialog._clean()
+        # The emptied frame and the orphan are two different kinds of finding:
+        # the orphan is structural and goes by default, the box-less image is
+        # the quality rule, so the switch has to be on for both to land.
+        run_cleanup(dialog, quality=True)
         assert dialog.result() == dialog.DialogCode.Accepted
         window._reload_cleaned_dataset(Path(dialog.cleaned_source))
         assert _wait(app, lambda: window._dataset_scan_completed and window._dataset_thread is None)

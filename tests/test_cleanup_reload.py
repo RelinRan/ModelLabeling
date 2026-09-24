@@ -14,7 +14,12 @@ import src.widgets.main_window as main_window_module
 from src.widgets.cleanup_dialog import CleanupDialog
 from src.widgets.main_window import MainWindow
 
-BOX = "0 0.5 0.5 0.2 0.2\n"
+BOX = "0 0.5 0.5 0.5 0.5\n"
+#: Half of a 100px image, so the box is 50px. The size is not incidental: a
+#: 20px box sits exactly on the cleanup threshold, and a smaller one is an
+#: annotation the quality rules are right to throw away -- which would take
+#: the image with it and quietly change what this test is about.
+IMAGE_SIZE = (100, 100)
 INDEX_CACHE = Path.home() / "AppData" / "Local" / "ModelLabeling" / "index"
 
 
@@ -25,7 +30,7 @@ def _make_dataset(root: Path, layout: dict) -> Path:
     for relative, rows in layout.items():
         image_path = root / "images" / relative
         image_path.parent.mkdir(parents=True, exist_ok=True)
-        Image.new("RGB", (8, 8), (200, 10, 10)).save(image_path, "JPEG")
+        Image.new("RGB", IMAGE_SIZE, (200, 10, 10)).save(image_path, "JPEG")
         label_path = root / "labels" / (Path(relative).with_suffix(".txt").as_posix())
         label_path.parent.mkdir(parents=True, exist_ok=True)
         label_path.write_text(rows, encoding="utf-8")
@@ -51,7 +56,7 @@ def _drop_index_cache(root: Path) -> None:
         leftover.unlink(missing_ok=True)
 
 
-def test_cleanup_after_clearing_last_box_reloads_dataset(tmp_path, monkeypatch):
+def test_cleanup_after_clearing_last_box_reloads_dataset(tmp_path, monkeypatch, run_cleanup):
     app = QApplication.instance() or QApplication([])
     # a.jpg keeps its box; the user will clear it inside the app.
     dataset = _make_dataset(tmp_path / "yolo", {"a.jpg": BOX, "b.jpg": BOX})
@@ -88,13 +93,14 @@ def test_cleanup_after_clearing_last_box_reloads_dataset(tmp_path, monkeypatch):
 
         # 4) scan + clean through the real dialog logic.
         dialog = CleanupDialog([], window, str(dataset))
-        monkeypatch.setattr(dialog, "_trash", lambda path: (path.unlink(missing_ok=True), True)[1])
         dialog._start_scan()
         assert _pump_until(app, lambda: not dialog._scanning)
         report = dialog.result_label.toPlainText().splitlines()
         assert report[0] == "[总图片]：2张  [有效标注]：1张  [无标注]：1张"
         assert "[无标注] a.jpg" in report
-        dialog._clean()
+        # The frame whose only box was cleared is now box-less, which is the
+        # quality rule the user has to ask for.
+        run_cleanup(dialog, quality=True)
         assert not (dataset / "images" / "a.jpg").exists()
         assert not (dataset / "labels" / "a.txt").exists()
 

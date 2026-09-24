@@ -15,6 +15,7 @@ from src.models.keypoint import COCO_PERSON_SKELETON
 from src.services.format_capabilities import task_for_format, validate_annotations
 from src.models.project import ProjectSettings
 from src.utils.geometry import rect_from_points, rect_to_yolo, yolo_to_rect
+from src.utils.pixels import channel_count
 from .coco_store import CocoAnnotationStore
 from .format_adapters import adapter_for
 from .yolo_metadata import yolo_keypoint_names, yolo_keypoint_shape
@@ -545,13 +546,14 @@ class AnnotationService:
     ) -> None:
         with Image.open(image_path) as image:
             width, height = image.size
+            depth = channel_count(image)
         root = ET.Element("annotation")
         ET.SubElement(root, "folder").text = image_path.parent.name
         ET.SubElement(root, "filename").text = image_path.name
         size = ET.SubElement(root, "size")
         ET.SubElement(size, "width").text = str(width)
         ET.SubElement(size, "height").text = str(height)
-        ET.SubElement(size, "depth").text = str(len(image_path.suffix))
+        ET.SubElement(size, "depth").text = str(depth)
         for annotation in annotations:
             rect = rect_from_points(annotation.points)
             obj = ET.SubElement(root, "object")

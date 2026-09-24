@@ -1298,8 +1298,6 @@ class CanvasView(QGraphicsView):
 
     def mousePressEvent(self, event) -> None:
         self.setFocus(Qt.FocusReason.MouseFocusReason)
-        # Any canvas click clears the independent label-list selection.
-        self.annotationSelected.emit(None)
         if event.button() == Qt.MouseButton.RightButton and self._finish_polygon_on_right_click():
             return
         if event.button() == Qt.MouseButton.RightButton and self.draw_enabled and self.mode == ShapeType.KEYPOINT and self.pending_keypoints:
@@ -1333,6 +1331,7 @@ class CanvasView(QGraphicsView):
             self._begin_box_drag(item, scene_point); return
         if event.button() == Qt.MouseButton.LeftButton and not item:
             self.scene.clearSelection()
+            self.annotationSelected.emit(None)
         if event.button() != Qt.MouseButton.LeftButton or not self.image_item or not self.draw_enabled:
             super().mousePressEvent(event); return
         point = self.mapToScene(event.position().toPoint())

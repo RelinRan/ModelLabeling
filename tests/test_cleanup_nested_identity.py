@@ -26,7 +26,7 @@ def _image(path: Path, color=(80, 100, 120)) -> None:
     Image.new("RGB", (100, 80), color).save(path, "JPEG")
 
 
-def test_coco_cleanup_uses_relative_path_for_duplicate_basenames(tmp_path, monkeypatch):
+def test_coco_cleanup_uses_relative_path_for_duplicate_basenames(tmp_path, run_cleanup):
     app = QApplication.instance() or QApplication([])
     root = tmp_path / "coco-nested"
     _image(root / "images" / "train" / "shared.jpg", (120, 40, 40))
@@ -47,16 +47,15 @@ def test_coco_cleanup_uses_relative_path_for_duplicate_basenames(tmp_path, monke
     }
     json_path = root / "annotations" / "annotations.json"
     json_path.write_text(json.dumps(document), encoding="utf-8")
-    monkeypatch.setattr("src.widgets.cleanup_dialog.AppDialog.information", classmethod(lambda cls, *a, **k: None))
-    monkeypatch.setattr("src.widgets.cleanup_dialog.AppDialog.question", classmethod(lambda cls, *a, **k: True))
 
     dialog = CleanupDialog([], default_source=str(root))
     try:
-        monkeypatch.setattr(dialog, "_trash", lambda path: (path.unlink(missing_ok=True), True)[1])
         dialog._start_scan()
         assert _wait(app, lambda: not dialog._scanning)
         assert [path.relative_to(root).as_posix() for path in dialog._to_delete_images] == ["images/val/shared.jpg"]
-        dialog._clean()
+        # The record with no annotations is a quality call: it is the switch
+        # a user turns on when they want empty images gone.
+        run_cleanup(dialog, quality=True)
 
         assert (root / "images" / "train" / "shared.jpg").exists()
         assert not (root / "images" / "val" / "shared.jpg").exists()
@@ -68,7 +67,7 @@ def test_coco_cleanup_uses_relative_path_for_duplicate_basenames(tmp_path, monke
         dialog.close()
 
 
-def test_yolo_cleanup_detects_nested_orphan_with_duplicate_stem(tmp_path, monkeypatch):
+def test_yolo_cleanup_detects_nested_orphan_with_duplicate_stem(tmp_path, run_cleanup):
     app = QApplication.instance() or QApplication([])
     root = tmp_path / "yolo-nested"
     _image(root / "images" / "train" / "shared.jpg")
@@ -78,17 +77,17 @@ def test_yolo_cleanup_detects_nested_orphan_with_duplicate_stem(tmp_path, monkey
     orphan = root / "labels" / "val" / "shared.txt"
     orphan.write_text("0 0.25 0.25 0.1 0.1\n", encoding="utf-8")
     (root / "classes.txt").write_text("person\n", encoding="utf-8")
-    monkeypatch.setattr("src.widgets.cleanup_dialog.AppDialog.information", classmethod(lambda cls, *a, **k: None))
-    monkeypatch.setattr("src.widgets.cleanup_dialog.AppDialog.question", classmethod(lambda cls, *a, **k: True))
 
     dialog = CleanupDialog([], default_source=str(root))
     try:
-        monkeypatch.setattr(dialog, "_trash", lambda path: (path.unlink(missing_ok=True), True)[1])
         dialog._start_scan()
         assert _wait(app, lambda: not dialog._scanning)
         assert dialog._to_delete_images == []
         assert [path.relative_to(root).as_posix() for path in dialog._to_delete_annotations] == ["labels/val/shared.txt"]
-        dialog._clean()
+        # An orphan is a broken invariant, not a policy call, so the default
+        # structural policy is enough to act on it.
+        run_cleanup(dialog)
+
         assert (root / "labels" / "train" / "shared.txt").exists()
         assert not orphan.exists()
     finally:
@@ -96,7 +95,7 @@ def test_yolo_cleanup_detects_nested_orphan_with_duplicate_stem(tmp_path, monkey
 
 
 
-def test_coco_cleanup_keeps_json_record_when_image_delete_fails(tmp_path, monkeypatch):
+def test_coco_cleanup_keeps_json_record_when_image_delete_fails(tmp_path, run_cleanup, locked_file):
     app = QApplication.instance() or QApplication([])
     root = tmp_path / "coco-delete-failure"
     image_path = root / "images" / "nested" / "empty.jpg"
@@ -109,17 +108,16 @@ def test_coco_cleanup_keeps_json_record_when_image_delete_fails(tmp_path, monkey
         "annotations": [],
     }
     json_path.write_text(json.dumps(document), encoding="utf-8")
-    monkeypatch.setattr("src.widgets.cleanup_dialog.AppDialog.information", classmethod(lambda cls, *a, **k: None))
-    monkeypatch.setattr("src.widgets.cleanup_dialog.AppDialog.question", classmethod(lambda cls, *a, **k: True))
 
     dialog = CleanupDialog([], default_source=str(root))
     try:
-        monkeypatch.setattr(dialog, "_trash", lambda path: False if path == image_path else True)
         dialog._start_scan()
         assert _wait(app, lambda: not dialog._scanning)
         assert dialog._to_delete_images == [image_path]
-        dialog._clean()
+        with locked_file(image_path):
+            lines = run_cleanup(dialog, quality=True)
 
+        assert any("未能删除" in line for line in lines), lines
         assert image_path.exists()
         cleaned = json.loads(json_path.read_text(encoding="utf-8"))
         assert cleaned["images"] == document["images"]
@@ -128,7 +126,7 @@ def test_coco_cleanup_keeps_json_record_when_image_delete_fails(tmp_path, monkey
         dialog.close()
 
 
-def test_yolo_cleanup_keeps_empty_label_when_image_delete_fails(tmp_path, monkeypatch):
+def test_yolo_cleanup_keeps_empty_label_when_image_delete_fails(tmp_path, run_cleanup, locked_file):
     app = QApplication.instance() or QApplication([])
     root = tmp_path / "yolo-delete-failure"
     image_path = root / "images" / "nested" / "empty.jpg"
@@ -137,22 +135,19 @@ def test_yolo_cleanup_keeps_empty_label_when_image_delete_fails(tmp_path, monkey
     label_path.parent.mkdir(parents=True)
     label_path.write_text("", encoding="utf-8")
     (root / "classes.txt").write_text("person\n", encoding="utf-8")
-    monkeypatch.setattr("src.widgets.cleanup_dialog.AppDialog.information", classmethod(lambda cls, *a, **k: None))
-    monkeypatch.setattr("src.widgets.cleanup_dialog.AppDialog.question", classmethod(lambda cls, *a, **k: True))
 
     dialog = CleanupDialog([], default_source=str(root))
     try:
-        def selective_trash(path):
-            if path == image_path:
-                return False
-            path.unlink(missing_ok=True)
-            return True
-        monkeypatch.setattr(dialog, "_trash", selective_trash)
         dialog._start_scan()
         assert _wait(app, lambda: not dialog._scanning)
         assert dialog._to_delete_images == [image_path]
-        dialog._clean()
+        with locked_file(image_path):
+            lines = run_cleanup(dialog, quality=True)
 
+        assert any("未能删除" in line for line in lines), lines
+        # And it must not be reported as cleaned: the log is where a user
+        # checks what a run did, and the file is still there.
+        assert not any(line.startswith("[已清理]") for line in lines), lines
         assert image_path.exists()
         assert label_path.exists()
         assert label_path.read_text(encoding="utf-8") == ""
@@ -180,7 +175,9 @@ def _voc_xml(filename: str, objects: list[tuple[str, tuple[int, int, int, int]]]
     return "\n".join(rows)
 
 
-def test_voc_cleanup_uses_nested_relative_identity_and_keeps_pair_on_failure(tmp_path, monkeypatch):
+def test_voc_cleanup_uses_nested_relative_identity_and_keeps_pair_on_failure(
+    tmp_path, run_cleanup, locked_file,
+):
     app = QApplication.instance() or QApplication([])
     root = tmp_path / "voc-nested"
     keep_image = root / "JPEGImages" / "train" / "shared.jpg"
@@ -195,24 +192,17 @@ def test_voc_cleanup_uses_nested_relative_identity_and_keeps_pair_on_failure(tmp
     keep_xml.write_text(_voc_xml("shared.jpg", [("person", (10, 10, 30, 30))]), encoding="utf-8")
     empty_xml.write_text(_voc_xml("shared.jpg", []), encoding="utf-8")
     orphan_xml.write_text(_voc_xml("shared.jpg", [("car", (20, 20, 40, 40))]), encoding="utf-8")
-    monkeypatch.setattr("src.widgets.cleanup_dialog.AppDialog.information", classmethod(lambda cls, *a, **k: None))
-    monkeypatch.setattr("src.widgets.cleanup_dialog.AppDialog.question", classmethod(lambda cls, *a, **k: True))
 
     dialog = CleanupDialog([], default_source=str(root))
     try:
-        def selective_trash(path):
-            if path == empty_image:
-                return False
-            path.unlink(missing_ok=True)
-            return True
-
-        monkeypatch.setattr(dialog, "_trash", selective_trash)
         dialog._start_scan()
         assert _wait(app, lambda: not dialog._scanning)
         assert dialog._to_delete_images == [empty_image]
         assert dialog._to_delete_annotations == [orphan_xml]
-        dialog._clean()
+        with locked_file(empty_image):
+            lines = run_cleanup(dialog, quality=True)
 
+        assert any("未能删除" in line for line in lines), lines
         assert keep_image.exists() and keep_xml.exists()
         assert empty_image.exists()
         assert empty_xml.exists(), "paired XML must survive when image deletion fails"
@@ -221,7 +211,9 @@ def test_voc_cleanup_uses_nested_relative_identity_and_keeps_pair_on_failure(tmp
         dialog.close()
 
 
-def test_coco_cleanup_mixed_delete_success_only_removes_successful_json_records(tmp_path, monkeypatch):
+def test_coco_cleanup_mixed_delete_success_only_removes_successful_json_records(
+    tmp_path, run_cleanup, locked_file,
+):
     app = QApplication.instance() or QApplication([])
     root = tmp_path / "coco-mixed-delete"
     success_image = root / "images" / "train" / "empty.jpg"
@@ -244,27 +236,28 @@ def test_coco_cleanup_mixed_delete_success_only_removes_successful_json_records(
         ],
     }
     json_path.write_text(json.dumps(document), encoding="utf-8")
-    monkeypatch.setattr("src.widgets.cleanup_dialog.AppDialog.information", classmethod(lambda cls, *a, **k: None))
-    monkeypatch.setattr("src.widgets.cleanup_dialog.AppDialog.question", classmethod(lambda cls, *a, **k: True))
 
     dialog = CleanupDialog([], default_source=str(root))
     try:
-        def selective_trash(path):
-            if path == failed_image:
-                return False
-            path.unlink(missing_ok=True)
-            return True
-
-        monkeypatch.setattr(dialog, "_trash", selective_trash)
         dialog._start_scan()
         assert _wait(app, lambda: not dialog._scanning)
         assert dialog._to_delete_images == [success_image, failed_image]
-        dialog._clean()
+        with locked_file(failed_image):
+            lines = run_cleanup(dialog, quality=True)
 
+        assert any("未能删除" in line for line in lines), lines
         assert not success_image.exists()
         assert failed_image.exists()
         assert keep_image.exists()
+        # Only the file that really went is reported as cleaned.
+        cleaned_names = {
+            line.removeprefix("[已清理] ").strip() for line in lines
+            if line.startswith("[已清理]")
+        }
+        assert cleaned_names == {"empty.jpg"}, cleaned_names
         cleaned = json.loads(json_path.read_text(encoding="utf-8"))
+        # The one record whose file survived keeps its record: the JSON still
+        # describes the dataset that is on disk.
         assert [item["file_name"] for item in cleaned["images"]] == ["val/empty.jpg", "val/keep.jpg"]
         assert cleaned["annotations"] == document["annotations"]
     finally:

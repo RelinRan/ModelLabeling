@@ -35,6 +35,7 @@ from src.services.yolo_metadata import write_kpt_shape, yolo_keypoint_names, yol
 from .annotation_edit_dialog import AnnotationEditDialog
 from .common_dialogs import AppDialog
 from .conversion_dialog import ConversionDialog, ConversionWorker
+from .video_tools_dialogs import VideoFrameDialog, DatasetSynthesisDialog, DatasetCompareDialog, DatasetCompareWorker, VideoToolsWorker
 from .cleanup_dialog import CleanupDialog
 from .crosshair_dialog import CrosshairDialog
 from .dataset_init_dialog import DatasetInitDialog
@@ -112,6 +113,8 @@ class MainWindow(QMainWindow):
         self.history_store = QSettings("RelinRan", "ModelLabeling")
         self.task_manager = TaskManager(self)
         self.dataset_task_id = self.conversion_task_id = self.auto_task_id = None
+        self.video_tools_task_id = None
+        self._video_tools_thread = self._video_tools_worker = None
         self._dataset_thread = self._conversion_thread = self._auto_thread = None
         self._dataset_worker = self._conversion_worker = self._auto_worker = None
         self._count_thread = self._count_worker = None
@@ -140,6 +143,9 @@ class MainWindow(QMainWindow):
         self.dataset_current_index = -1
         self.dataset_parser_presets: list[LabelPreset] = []
         self._conversion_cancel_requested = False
+        self._compare_thread = self._compare_worker = None
+        self.compare_task_id = None
+        self._compare_cancelled = False
         self._auto_cancel_requested = False
         self._save_thread = self._save_worker = None
         self._save_generation = 0
@@ -164,12 +170,13 @@ class MainWindow(QMainWindow):
                 modifiers = event.modifiers()
                 key = event.key()
                 chord_start = {
-                    Qt.Key.Key_L: "LG",
-                    Qt.Key.Key_K: "KG",
-                    Qt.Key.Key_A: "AS",
-                    Qt.Key.Key_I: "IF",
-                    Qt.Key.Key_C: "CA",
-                    Qt.Key.Key_D: "DS",
+                    Qt.Key.Key_L: "L",
+                    Qt.Key.Key_K: "K",
+                    Qt.Key.Key_A: "A",
+                    Qt.Key.Key_I: "I",
+                    Qt.Key.Key_C: "C",
+                    Qt.Key.Key_D: "D",
+                    Qt.Key.Key_T: "T",
                 }.get(key) if modifiers & Qt.KeyboardModifier.ControlModifier else None
                 if chord_start:
                     self._shortcut_chord = chord_start
@@ -177,24 +184,34 @@ class MainWindow(QMainWindow):
                     event.accept()
                     return True
                 if self._shortcut_chord:
+                    # A start letter carries every command that hangs off it and
+                    # the second stroke picks one: Ctrl+D is both 数据合成 (S)
+                    # and 数据对比 (P). V is deliberately not a start letter --
+                    # Ctrl+V has to stay free for pasting in text fields.
                     action = {
-                        "LG": (Qt.Key.Key_G, self.open_label_groups),
-                        "KG": (Qt.Key.Key_G, self.open_keypoint_groups),
-                        "AS": (Qt.Key.Key_S, self.open_settings),
-                        "IF": (Qt.Key.Key_F, self.open_image_filter),
-                        "CA": (Qt.Key.Key_A, self.open_crosshair),
-                        "DS": (Qt.Key.Key_S, self.open_statistics),
-                    }.get(self._shortcut_chord)
+                        "L": {Qt.Key.Key_G: self.open_label_groups},
+                        "K": {Qt.Key.Key_G: self.open_keypoint_groups},
+                        "A": {Qt.Key.Key_S: self.open_settings},
+                        "I": {Qt.Key.Key_F: self.open_image_filter},
+                        "C": {Qt.Key.Key_A: self.open_crosshair},
+                        "D": {
+                            Qt.Key.Key_S: self.open_dataset_synthesis,
+                            Qt.Key.Key_P: self.open_dataset_compare,
+                        },
+                        "T": {Qt.Key.Key_S: self.open_statistics},
+                    }.get(self._shortcut_chord, {}).get(key)
                     self._clear_shortcut_chord()
-                    if action and key == action[0] and not modifiers:
-                        action[1]()
+                    if action is not None and not modifiers:
+                        action()
                         event.accept()
                         return True
-            if focus is self.canvas or (focus is not None and self.canvas.isAncestorOf(focus)):
-                if event.key() == Qt.Key.Key_W:
-                    self._toggle_canvas_drawing()
-                    event.accept()
-                    return True
+            # W is global for annotation mode after any non-text panel click.
+            # Text editors and combo boxes were filtered above, so their W
+            # input remains untouched.
+            if event.key() == Qt.Key.Key_W:
+                self._toggle_canvas_drawing()
+                event.accept()
+                return True
         return super().eventFilter(watched, event)
 
     def _clear_shortcut_chord(self) -> None:
@@ -321,8 +338,11 @@ class MainWindow(QMainWindow):
         self._action(view_menu, tr("图片缩小  Ctrl+-", "Image Zoom Out  Ctrl+-"), self.canvas.zoom_out)
         self._action(view_menu, tr("上张图片  A/↑", "Previous Image  A/↑"), self.previous_image)
         self._action(view_menu, tr("下张图片  D/↓", "Next Image  D/↓"), self.next_image)
-        self._action(tools_menu, tr("数据统计  Ctrl+D+S", "Statistics  Ctrl+D+S"), self.open_statistics)
+        self._action(tools_menu, tr("数据统计  Ctrl+T+S", "Statistics  Ctrl+T+S"), self.open_statistics)
+        self._action(tools_menu, tr("数据对比  Ctrl+D+P", "Compare Dataset  Ctrl+D+P"), self.open_dataset_compare)
         self._action(tools_menu, tr("数据转换  Ctrl+D+C", "Dataset Conversion  Ctrl+D+C"), self.open_conversion)
+        self._action(tools_menu, "\u89c6\u9891\u63d0\u5e27  Ctrl+V+F" if not english else "Extract Video Frames  Ctrl+V+F", self.open_video_frames)
+        self._action(tools_menu, "\u6570\u636e\u5408\u6210  Ctrl+D+S" if not english else "Synthesize Dataset  Ctrl+D+S", self.open_dataset_synthesis)
         self._action(tools_menu, tr("清理数据  Ctrl+C+D", "Clean Dataset  Ctrl+C+D"), self.open_cleanup)
         self._action(tools_menu, tr("自动标注  Ctrl+A+L", "Auto Label  Ctrl+A+L"), self.auto_label_all)
         self._action(help_menu, tr("使用说明", "User Guide"), lambda: UsageGuideDialog(self).exec())
@@ -355,12 +375,15 @@ class MainWindow(QMainWindow):
             ("Up", lambda: self._navigate_shortcut(-1)),
             ("D", lambda: self._navigate_shortcut(1)),
             ("Down", lambda: self._navigate_shortcut(1)),
-            ("Ctrl+D, S", self.open_statistics),
-            ("Ctrl+D, Ctrl+S", self.open_statistics),
-            ("Ctrl+D, C", self.open_conversion),
+            ("Ctrl+D, S", self.open_dataset_synthesis),
+            ("Ctrl+D, Ctrl+S", self.open_dataset_synthesis),
+            ("Ctrl+D, P", self.open_dataset_compare),
+            ("Ctrl+D, Ctrl+P", self.open_dataset_compare),
+            ("Ctrl+T, S", self.open_statistics),
+            ("Ctrl+V, F", self.open_video_frames),
+            ("Ctrl+V, Ctrl+F", self.open_video_frames),
             ("Ctrl+C, D", self.open_cleanup),
             ("Ctrl+C, Ctrl+D", self.open_cleanup),
-            ("Ctrl+D, Ctrl+C", self.open_conversion),
             ("Ctrl+A, L", self.auto_label_all),
             ("Ctrl+A, Ctrl+L", self.auto_label_all),
             ("W", self._drawing_shortcut),
@@ -393,8 +416,9 @@ class MainWindow(QMainWindow):
         return isinstance(focus, (QLineEdit, QComboBox))
 
     def _navigate_shortcut(self, step: int) -> None:
-        if not self._shortcut_input_focused():
-            self._navigate_image_list(step)
+        if self._shortcut_input_focused():
+            return
+        self._navigate_image_list(step)
 
     def _select_label_shortcut(self, number: int) -> None:
         """1-9 selects the label bound to that key (or the default slot)."""
@@ -1044,9 +1068,25 @@ class MainWindow(QMainWindow):
         self._flush_pending_annotation_save()
         default_source = str(self.dataset_root) if self.dataset_root else ""
         dialog = CleanupDialog(self.settings.label_presets, self, default_source, self.settings.language)
+        dialog.progress.connect(self._cleanup_progress)
+        dialog.progress_finished.connect(self._cleanup_progress_finished)
+        dialog.cleanup_completed.connect(self._cleanup_completed)
         dialog.exec()
-        if dialog.result() == dialog.DialogCode.Accepted and dialog.cleaned_source:
-            self._reload_cleaned_dataset(Path(dialog.cleaned_source))
+
+    def _cleanup_progress(self, current: int, total: int) -> None:
+        # Hide immediately when the final progress event arrives; the
+        # completion signal may be queued behind this update.
+        if total > 0 and current >= total:
+            self.status_progress_host.setVisible(False)
+            return
+        self._set_status_progress("\u6570\u636e\u6e05\u7406", current, total)
+
+    def _cleanup_progress_finished(self) -> None:
+        self.status_progress_host.setVisible(False)
+
+    def _cleanup_completed(self, source: str) -> None:
+        if source:
+            self._reload_cleaned_dataset(Path(source))
 
     def _flush_pending_annotation_save(self, timeout: float = 30.0) -> bool:
         """Synchronously drain the single-writer save queue before disk reads.
@@ -1076,6 +1116,153 @@ class MainWindow(QMainWindow):
         self.dataset_root = None
         self._start_open_path(source)
 
+    def open_video_frames(self) -> None:
+        if self._operation_blocked("conversion"):
+            return
+        dialog = VideoFrameDialog(self)
+        if dialog.exec() == dialog.DialogCode.Accepted and dialog.options:
+            self._start_video_tools("frames", dialog.options)
+
+    def open_dataset_synthesis(self) -> None:
+        if self._operation_blocked("conversion"):
+            return
+        dialog = DatasetSynthesisDialog(self)
+        if dialog.exec() == dialog.DialogCode.Accepted and dialog.options:
+            self._start_video_tools("synthesis", dialog.options)
+
+    def _start_video_tools(self, operation: str, options: dict) -> None:
+        english = self.settings.language == "en_US"
+        label = ("Extracting frames" if english else "\u89c6\u9891\u63d0\u5e27") if operation == "frames" else ("Dataset synthesis" if english else "\u6570\u636e\u5408\u6210")
+        total = 0 if operation == "frames" else self._count_images(options["source_dir"])
+        if operation == "frames":
+            source_dir = options["source_dir"]
+            total = sum(1 for path in source_dir.rglob("*") if path.is_file() and path.suffix.lower() in {".mp4", ".avi", ".mov", ".mkv", ".wmv", ".flv", ".mpeg", ".mpg", ".m4v", ".webm"})
+        self.video_tools_task_id = self.task_manager.start(label, total=total)
+        self._video_tools_thread = QThread(self)
+        presets = self.settings.label_presets if operation == "synthesis" else None
+        self._video_tools_worker = VideoToolsWorker(operation, options, presets)
+        self._video_tools_worker.moveToThread(self._video_tools_thread)
+        self._video_tools_thread.started.connect(self._video_tools_worker.run)
+        self._video_tools_worker.progress.connect(self._video_tools_progress)
+        self._video_tools_worker.completed.connect(self._video_tools_finished)
+        self._video_tools_worker.failed.connect(self._video_tools_failed)
+        self._video_tools_worker.completed.connect(self._video_tools_thread.quit)
+        self._video_tools_worker.failed.connect(self._video_tools_thread.quit)
+        self._video_tools_thread.finished.connect(self._video_tools_thread_finished)
+        self._set_status_progress("\u89c6\u9891\u63d0\u5e27" if operation == "frames" else "\u6570\u636e\u5408\u6210", 0, total)
+        self._video_tools_thread.start()
+
+    def _video_tools_progress(self, operation: str, current: int, total: int) -> None:
+        percent = int(current / total * 100) if total else 0
+        self.task_manager.update(self.video_tools_task_id, percent, current, total)
+        kind = "\u89c6\u9891\u63d0\u5e27" if operation == "frames" else "\u6570\u636e\u5408\u6210"
+        self._set_status_progress(kind, current, total, percent)
+
+    def _video_tools_finished(self, operation: str, report) -> None:
+        self.status_progress_host.setVisible(False)
+        english = self.settings.language == "en_US"
+        if operation == "frames":
+            videos, frames = report
+            title = "Notice" if english else "\u63d0\u793a"
+            message = (f"Frame extraction completed: {frames} frames saved from {videos} videos." if english
+                       else f"\u63d0\u5e27\u5b8c\u6210\uff1a\u5171\u626b\u63cf {videos} \u4e2a\u89c6\u9891\uff0c\u4fdd\u5b58 {frames} \u5f20\u56fe\u7247\u3002")
+        else:
+            title = "Notice" if english else "\u63d0\u793a"
+            message = (f"Dataset synthesis completed: {report.succeeded} images succeeded, {report.failed} failed, {report.skipped} skipped." if english
+                       else f"\u6570\u636e\u5408\u6210\u5b8c\u6210\uff1a\u6210\u529f {report.succeeded} \u5f20\uff0c\u5931\u8d25 {report.failed} \u5f20\uff0c\u8df3\u8fc7 {report.skipped} \u5f20\u3002")
+        AppDialog.information(title, message, self)
+
+    def _video_tools_failed(self, message: str) -> None:
+        self.status_progress_host.setVisible(False)
+        title = "Notice" if self.settings.language == "en_US" else "\u63d0\u793a"
+        AppDialog.information(title, message, self)
+
+    def _video_tools_thread_finished(self) -> None:
+        self.status_progress_host.setVisible(False)
+        self.task_manager.finish(self.video_tools_task_id)
+        self.video_tools_task_id = None
+        self._video_tools_thread = self._video_tools_worker = None
+        self._maybe_close_task_list()
+
+    def open_dataset_compare(self) -> None:
+        if self._operation_blocked("conversion"):
+            return
+        dialog = DatasetCompareDialog(
+            self,
+            default_model=str(self.settings.onnx_model_path or ""),
+            default_dataset=str(self.dataset_root or ""),
+        )
+        if dialog.exec() == dialog.DialogCode.Accepted and dialog.options:
+            self._start_dataset_compare(dialog.options)
+
+    def _start_dataset_compare(self, options: dict) -> None:
+        english = self.settings.language == "en_US"
+        label = "Data comparison" if english else "数据对比"
+        total = self._count_images(options["dataset_dir"])
+        self.compare_task_id = self.task_manager.start(label, self.cancel_dataset_compare, total)
+        self._compare_cancelled = False
+        self._compare_thread = QThread(self)
+        self._compare_worker = DatasetCompareWorker(options)
+        self._compare_worker.moveToThread(self._compare_thread)
+        self._compare_thread.started.connect(self._compare_worker.run)
+        self._compare_worker.progress.connect(self._compare_progress)
+        self._compare_worker.completed.connect(self._compare_finished)
+        self._compare_worker.failed.connect(self._compare_failed)
+        self._compare_worker.completed.connect(self._compare_thread.quit)
+        self._compare_worker.failed.connect(self._compare_thread.quit)
+        self._compare_thread.finished.connect(self._compare_thread_finished)
+        self._set_status_progress("数据对比", 0, total)
+        self._compare_thread.start()
+
+    def cancel_dataset_compare(self) -> None:
+        self._compare_cancelled = True
+        if self._compare_worker:
+            self._compare_worker.cancelled = True
+
+    def _compare_progress(self, current: int, total: int) -> None:
+        percent = int(current / total * 100) if total else 0
+        self.task_manager.update(self.compare_task_id, percent, current, total)
+        self._set_status_progress("数据对比", current, total, percent)
+
+    def _compare_finished(self, report) -> None:
+        self.status_progress_host.setVisible(False)
+        english = self.settings.language == "en_US"
+        title = "Notice" if english else "提示"
+        if report.cancelled:
+            AppDialog.information(
+                title,
+                "Data comparison cancelled; no report was written." if english
+                else "数据对比已取消，未生成报告文件。",
+                self,
+            )
+            return
+        message = (
+            f"Compared {report.compared} images against the model: "
+            f"{report.mismatched} disagree ({report.mismatch_rate * 100:.2f}%), "
+            f"{report.skipped} skipped.\nReport: {report.output_path}"
+            if english else
+            f"对比完成：共比对 {report.compared} 张，"
+            f"不一致 {report.mismatched} 张"
+            f"（{report.mismatch_rate * 100:.2f}%），"
+            f"跳过 {report.skipped} 张。\n"
+            f"报告：{report.output_path}"
+        )
+        AppDialog.information(title, message, self)
+
+    def _compare_failed(self, message: str) -> None:
+        self.status_progress_host.setVisible(False)
+        if self._compare_cancelled:
+            return
+        title = "Notice" if self.settings.language == "en_US" else "提示"
+        AppDialog.information(title, message, self)
+
+    def _compare_thread_finished(self) -> None:
+        self.status_progress_host.setVisible(False)
+        self.task_manager.finish(self.compare_task_id)
+        self.compare_task_id = None
+        self._compare_thread = self._compare_worker = None
+        self._maybe_close_task_list()
+
     def open_conversion(self) -> None:
         if self._operation_blocked("conversion"):
             return
@@ -1088,7 +1275,7 @@ class MainWindow(QMainWindow):
         coordinator = self.operation_coordinator
         coordinator.dataset_loading = self._dataset_thread is not None and self._dataset_thread.isRunning()
         coordinator.auto_labeling = self._auto_thread is not None and self._auto_thread.isRunning()
-        coordinator.converting = self._conversion_thread is not None and self._conversion_thread.isRunning()
+        coordinator.converting = ((self._conversion_thread is not None and self._conversion_thread.isRunning()) or (self._video_tools_thread is not None and self._video_tools_thread.isRunning()) or (self._compare_thread is not None and self._compare_thread.isRunning()))
         coordinator.statistics_running = self._stats_thread is not None and self._stats_thread.is_alive()
         coordinator.statistics_complete = self._statistics_completed
         allowed, active = coordinator.can_start(operation)
@@ -1588,7 +1775,7 @@ class MainWindow(QMainWindow):
 
     def _set_status_progress(self, kind: str, current: int, total: int, percent: int | None = None) -> None:
         english = self.settings.language == "en_US"
-        label = {"加载": "Loading", "统计": "Statistics", "转换": "Conversion", "自动标注": "Auto labeling"}.get(kind, kind) if english else kind
+        label = {"\u52a0\u8f7d": "Loading", "\u7edf\u8ba1": "Statistics", "\u8f6c\u6362": "Conversion", "\u81ea\u52a8\u6807\u6ce8": "Auto labeling", "\u89c6\u9891\u63d0\u5e27": "Extracting frames", "\u6570\u636e\u5408\u6210": "Dataset synthesis", "\u6570\u636e\u6e05\u7406": "Dataset cleanup", "\u6570\u636e\u5bf9\u6bd4": "Data comparison"}.get(kind, kind) if english else kind
         self.status_progress_host.setVisible(True)
         if total:
             value = max(0, min(100, int(percent if percent is not None else current / total * 100)))
@@ -1939,6 +2126,7 @@ class MainWindow(QMainWindow):
         threads = (
             self._dataset_thread,
             self._conversion_thread,
+            self._video_tools_thread,
             self._auto_thread,
             self._annotation_thread,
             self._save_thread,
@@ -1973,9 +2161,9 @@ class MainWindow(QMainWindow):
         event.accept()
 
     def _canvas_annotation_selected(self, annotation) -> None:
-        # Canvas selection is independent from the label-list selection.
-        # Clicking a box must never move the right-panel selection.
-        self.preset_panel.clear_selection()
+        # Canvas selection and the right-panel label selection are completely
+        # independent. Clicking either a box or empty preview space must not
+        # clear the label card selected by the user.
         self.refresh_stats()
 
     def _sync_record_annotations(self, *_args) -> None:
