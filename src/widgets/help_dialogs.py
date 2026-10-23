@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog, QGridLayout, QHBoxLayout, QLabel, QListWidget, QPlainTextEdit, QStackedWidget, QVBoxLayout, QWidget
+from .shortcut_registry import shortcut_rows
 
 
 def _table_layout(rows: list[tuple[str, str]], spacing: int = 9) -> QGridLayout:
@@ -27,17 +28,7 @@ class _LegacyShortcutsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("快捷按键")
         self.setMinimumWidth(460)
-        layout = _table_layout([
-            ("A / \u2191", "\u4e0a\u5f20\u56fe\u7247"), ("D / \u2193", "\u4e0b\u5f20\u56fe\u7247"),
-            ("Ctrl+O", "打开数据集"), ("Ctrl+S", "保存标注"), ("Ctrl+Q", "退出应用"),
-            ("A", "上张图片"), ("D", "下张图片"), ("Ctrl + +", "图片放大"),
-            ("Ctrl+-", "图片缩小"), ("Ctrl+0", "适应画布"), ("W", "启用绘制"),
-            ("Ctrl+L+G", "标签分组"), ("Ctrl+K+G", "点位类型"), ("Ctrl + A + S", "参数设置"),
-            ("Ctrl+I+F", "图片筛选"), ("Ctrl+C+A", "标注辅助"),
-            ("Ctrl+T+S", "数据统计"), ("Ctrl+D+C", "数据转换"), ("Ctrl+A+L", "自动标注"),
-            ("Ctrl+V+F", "视频提帧"), ("Ctrl+D+S", "数据合成"),
-            ("Delete / Backspace", "删除选中标注"), ("Esc", "取消当前绘制"),
-        ])
+        layout = _table_layout(shortcut_rows(False))
         self.setLayout(layout)
 
 
@@ -53,9 +44,9 @@ class _LegacyAboutDialog(QDialog):
         layout.addWidget(title)
         table = _table_layout([
             ("产品", "桌面端图像标注工作台"),
-            ("功能", "六种数据集合任务：YOLO 检测/分割/关键点/旋转框、Pascal VOC、COCO"),
+            ("功能", "六种数据集任务：YOLO 检测/分割/关键点/旋转框、Pascal VOC、COCO"),
             ("标注", "支持矩形、正方形、多边形绘制、拖拽调整与快捷操作"),
-            ("能力", "工作空间式新建向导、大数据集合秒开、ONNX 自动标注、批量转换与统计"),
+            ("能力", "工作空间式新建向导、大数据集快速打开、ONNX 自动标注、批量转换与统计"),
             ("版本", "v1.0.1"),
             ("作者", "RelinRan"),
             ("GitHub", "https://github.com/RelinRan"),
@@ -70,46 +61,7 @@ class ShortcutsDialog(QDialog):
         english = getattr(getattr(parent, "settings", None), "language", "zh_CN") == "en_US"
         self.setWindowTitle("Shortcuts" if english else "\u5feb\u6377\u6309\u952e")
         self.setFixedWidth(420)
-        en_rows = [
-            ("Ctrl+N", "New dataset"), ("Ctrl+O", "Open dataset"), ("Ctrl+H", "History"),
-            ("Ctrl+S", "Save"), ("Ctrl+Q", "Exit"),
-            ("A / Up", "Previous image"), ("D / Down", "Next image"),
-            ("Mouse wheel", "Zoom toward cursor"), ("Ctrl+0", "Fit canvas"),
-            ("Ctrl++ / Ctrl+-", "Zoom in / out"), ("W", "Toggle drawing"),
-            ("1-9", "Select bound label"), ("Ctrl+1-9", "Bind selected label"),
-            ("Shift + drag", "Constrain square"),
-            ("Enter / double click", "Finish polygon or keypoints"),
-            ("Backspace", "Remove last point while drawing"),
-            ("Esc", "Cancel current shape / exit drawing"),
-            ("Ctrl+Z / Ctrl+Y", "Undo / redo"),
-            ("Delete", "Delete selected annotation"),
-            ("Ctrl+L+G", "Label groups"), ("Ctrl+K+G", "Keypoint types"),
-            ("Ctrl+A+S", "Settings"), ("Ctrl+I+F", "File filter"), ("Ctrl+C+A", "Annotation assist"),
-            ("Ctrl+T+S", "Statistics"), ("Ctrl+D+C", "Dataset conversion"),
-            ("Ctrl+V+F", "Extract video frames"), ("Ctrl+D+S", "Synthesize dataset"),
-            ("Ctrl+D+P", "Compare dataset"),
-            ("Ctrl+A+L", "Auto labeling"),
-        ]
-        zh_rows = [
-            ("Ctrl+N", "\u65b0\u5efa\u6570\u636e\u96c6"), ("Ctrl+O", "\u6253\u5f00\u6570\u636e\u96c6"), ("Ctrl+H", "\u5386\u53f2"),
-            ("Ctrl+S", "\u4fdd\u5b58"), ("Ctrl+Q", "\u9000\u51fa"),
-            ("A / \u2191", "\u4e0a\u4e00\u5f20\u56fe\u7247"), ("D / \u2193", "\u4e0b\u4e00\u5f20\u56fe\u7247"),
-            ("\u9f20\u6807\u6eda\u8f6e", "\u4ee5\u5149\u6807\u4e3a\u4e2d\u5fc3\u7f29\u653e"), ("Ctrl+0", "\u9002\u914d\u753b\u5e03"),
-            ("Ctrl++ / Ctrl+-", "\u653e\u5927 / \u7f29\u5c0f"), ("W", "\u5207\u6362\u7ed8\u5236\u72b6\u6001"),
-            ("1-9", "\u9009\u62e9\u7ed1\u5b9a\u6807\u7b7e"), ("Ctrl+1-9", "\u7ed1\u5b9a\u5f53\u524d\u6807\u7b7e"),
-            ("Shift + \u62d6\u52a8", "\u7ed8\u5236\u6b63\u65b9\u5f62"),
-            ("Enter / \u53cc\u51fb", "\u5b8c\u6210\u591a\u8fb9\u5f62\u6216\u5173\u952e\u70b9"),
-            ("Backspace", "\u7ed8\u5236\u65f6\u64a4\u9500\u4e0a\u4e00\u4e2a\u70b9"),
-            ("Esc", "\u53d6\u6d88\u5f53\u524d\u56fe\u5f62 / \u9000\u51fa\u7ed8\u5236"),
-            ("Ctrl+Z / Ctrl+Y", "\u64a4\u9500 / \u91cd\u505a"),
-            ("Delete", "\u5220\u9664\u9009\u4e2d\u6807\u6ce8"),
-            ("Ctrl+L+G", "\u6807\u7b7e\u5206\u7ec4"), ("Ctrl+K+G", "\u5173\u952e\u70b9\u7c7b\u578b"),
-            ("Ctrl+A+S", "\u53c2\u6570\u8bbe\u7f6e"), ("Ctrl+I+F", "\u6587\u4ef6\u7b5b\u9009"), ("Ctrl+C+A", "\u6807\u6ce8\u8f85\u52a9"),
-            ("Ctrl+T+S", "\u6570\u636e\u7edf\u8ba1"), ("Ctrl+D+C", "\u6570\u636e\u8f6c\u6362"),
-            ("Ctrl+V+F", "\u89c6\u9891\u63d0\u5e27"), ("Ctrl+D+S", "\u6570\u636e\u5408\u6210"),
-            ("Ctrl+D+P", "\u6570\u636e\u5bf9\u6bd4"), ("Ctrl+A+L", "\u81ea\u52a8\u6807\u6ce8"),
-        ]
-        self.setLayout(_table_layout(en_rows if english else zh_rows, spacing=7))
+        self.setLayout(_table_layout(shortcut_rows(english), spacing=7))
 
 
 class AboutDialog(QDialog):

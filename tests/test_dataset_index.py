@@ -23,6 +23,26 @@ def test_duplicate_basenames_have_distinct_positions(tmp_path):
     assert [item.path for page in repository.iter_pages(1) for item in page] == [first, second]
 
 
+def test_index_identity_includes_image_and_annotation_directories(tmp_path):
+    image_a = tmp_path / "a" / "sample.jpg"
+    image_b = tmp_path / "b" / "sample.jpg"
+    _image(image_a)
+    _image(image_b)
+    first = DatasetIndexRepository(tmp_path, image_a.parent, tmp_path / "labels", "yolo")
+    second = DatasetIndexRepository(tmp_path, image_b.parent, tmp_path / "labels", "yolo")
+    for repository in (first, second):
+        for batch in repository.scan_paths():
+            repository.upsert_batch(batch)
+
+    assert first.path != second.path
+    assert [item.path for item in first.get_page(0, 10)] == [image_a]
+    assert [item.path for item in second.get_page(0, 10)] == [image_b]
+    equivalent = DatasetIndexRepository(tmp_path / "different-entry", image_a.parent, tmp_path / "labels", "yolo")
+    assert equivalent.path == first.path
+    changed_labels = DatasetIndexRepository(tmp_path, image_a.parent, tmp_path / "other-labels", "yolo")
+    assert changed_labels.path != first.path
+
+
 def test_coco_status_and_labels_use_relative_path_without_basename_merging(tmp_path):
     image_dir = tmp_path / "images"
     annotation_dir = tmp_path / "annotations"

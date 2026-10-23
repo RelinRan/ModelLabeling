@@ -57,7 +57,8 @@ def test_main_window_does_not_open_the_developers_dataset(synthetic_dataset):
     app.processEvents()
 
     opened = str(window.dataset_root) if window.dataset_root else ""
-    assert opened != real_root, "MainWindow opened the developer's real dataset"
+    if real_root:
+        assert opened != real_root, "MainWindow opened the developer's real dataset"
     assert "scratch" not in opened
     assert opened == ""
 

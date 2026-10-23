@@ -14,6 +14,7 @@ from src.models.project import ProjectSettings
 from src.services.annotation_service import AnnotationService
 from src.services.coco_store import CocoAnnotationStore
 from src.services.conversion_service import ConversionOptions, ConversionService
+from src.services.dataset_detector import DatasetDetector
 from src.services.format_capabilities import UnsupportedAnnotationError, validate_annotations
 
 
@@ -293,7 +294,8 @@ def test_coco_multipart_polygon_round_trip(tmp_path):
     assert document["annotations"][0]["area"] == pytest.approx(650.0)
 
 
-def test_yolo_segmentation_rejects_multipart_polygon():
+@pytest.mark.parametrize("as_iterator", [False, True])
+def test_yolo_segmentation_rejects_multipart_polygon(as_iterator):
     parts = [
         [QPointF(10, 10), QPointF(30, 10), QPointF(20, 30)],
         [QPointF(100, 100), QPointF(130, 100), QPointF(115, 130)],
@@ -303,7 +305,7 @@ def test_yolo_segmentation_rejects_multipart_polygon():
     )
 
     with pytest.raises(UnsupportedAnnotationError, match="multipart"):
-        validate_annotations([annotation], "yolo", "yolo_segmentation")
+        validate_annotations(iter([annotation]) if as_iterator else [annotation], "yolo", "yolo_segmentation")
 
 
 def test_coco_rle_mask_is_not_silently_loaded_as_rectangle(tmp_path):
@@ -530,7 +532,9 @@ def test_coco_polygon_converts_to_yolo_segmentation_without_semantic_loss(tmp_pa
     annotations_dir.mkdir()
     _sample_image(image)
     presets = [LabelPreset("person", 0, "#00e5ff")]
-    points = [QPointF(10, 20), QPointF(110, 30), QPointF(60, 120)]
+    # Four vertices are deliberately used: without task metadata this row is
+    # indistinguishable from the 9-column YOLO OBB layout by arity alone.
+    points = [QPointF(10, 20), QPointF(110, 20), QPointF(110, 120), QPointF(10, 120)]
     polygon = Annotation(ShapeType.POLYGON, "person", points)
     AnnotationService().save_coco_batch([(image, [polygon])], annotations_dir, presets)
     output = tmp_path / "output"
@@ -551,9 +555,86 @@ def test_coco_polygon_converts_to_yolo_segmentation_without_semantic_loss(tmp_pa
     )
 
     assert report.failed == 0 and report.succeeded == 1
+    detected = DatasetDetector.detect(output)
+    assert detected.task_name == "yolo_segmentation"
+    assert "task: segment" in (output / "data.yaml").read_text(encoding="utf-8")
+    assert (output / "images" / "sample.jpg").is_file()
+    assert (output / "labels" / "sample.txt").is_file()
     assert not loaded.error and len(loaded.annotations) == 1
     assert loaded.annotations[0].shape_type == ShapeType.POLYGON
     assert loaded.annotations[0].label == "person"
     for expected, actual in zip(points, loaded.annotations[0].points):
         assert actual.x() == pytest.approx(expected.x(), abs=0.01)
         assert actual.y() == pytest.approx(expected.y(), abs=0.01)
+
+
+def test_plain_images_convert_to_standard_yolo_seg_dataset(tmp_path):
+    source = tmp_path / "photos"
+    source.mkdir()
+    _sample_image(source / "sample.jpg")
+    output = tmp_path / "segmentation-dataset"
+    presets = [LabelPreset("person", 0, "#00e5ff")]
+
+    report = ConversionService().convert(ConversionOptions(
+        source_format="yolo", source_path=source,
+        output_format="yolo", output_path=output,
+        presets=presets, source_task="yolo_detection",
+        output_task="yolo_segmentation", plain_image_source=True,
+    ))
+
+    assert report.failed == 0 and report.succeeded == 1
+    assert (output / "images" / "sample.jpg").is_file()
+    assert (output / "labels" / "sample.txt").is_file()
+    assert DatasetDetector.detect(output).task_name == "yolo_segmentation"
+
+
+@pytest.mark.parametrize("relative_output", [".", "converted", ".."])
+def test_conversion_rejects_overlapping_paths_before_modifying_files(tmp_path, relative_output):
+    source = tmp_path / "source"
+    (source / "images").mkdir(parents=True)
+    (source / "labels").mkdir()
+    _sample_image(source / "images" / "sample.jpg")
+    (source / "labels" / "sample.txt").write_text("0 0.5 0.5 0.2 0.2\n", encoding="utf-8")
+    before = {path.relative_to(source): path.read_bytes() for path in source.rglob("*") if path.is_file()}
+
+    with pytest.raises(ValueError, match="must not overlap"):
+        ConversionService().convert(ConversionOptions(
+            "yolo", source, "coco", source / relative_output, [], overwrite=True,
+        ))
+
+    assert before == {path.relative_to(source): path.read_bytes() for path in source.rglob("*") if path.is_file()}
+
+
+def test_conversion_discovers_nested_voc_classes_without_editor_presets(tmp_path):
+    source = tmp_path / "voc"
+    images = source / "JPEGImages"
+    annotations = source / "Annotations"
+    (images / "train").mkdir(parents=True)
+    image = images / "train" / "sample.jpg"
+    _sample_image(image)
+    presets = [LabelPreset("person", 0, "#00e5ff")]
+    settings = ProjectSettings(image_dir=images, annotation_dir=annotations,
+                               annotation_format="voc", dataset_task="voc", label_presets=presets)
+    box = Annotation(ShapeType.RECTANGLE, "person", [QPointF(10, 20), QPointF(110, 120)])
+    assert AnnotationService().save(image, [box], annotations, settings).ok
+    output = tmp_path / "converted"
+
+    report = ConversionService().convert(ConversionOptions("voc", source, "yolo", output, []))
+
+    assert report.failed == 0 and report.succeeded == 1, report.errors
+    assert (output / "classes.txt").read_text().strip() == "person"
+    assert (output / "labels" / "train" / "sample.txt").read_text().startswith("0 ")
+
+
+def test_conversion_preserves_sparse_yolo_class_ids_in_nested_labels(tmp_path):
+    source = tmp_path / "yolo"
+    (source / "images" / "train").mkdir(parents=True)
+    (source / "labels" / "train").mkdir(parents=True)
+    _sample_image(source / "images" / "train" / "sample.jpg")
+    (source / "labels" / "train" / "sample.txt").write_text("5 0.5 0.5 0.2 0.2\n", encoding="utf-8")
+    output = tmp_path / "voc"
+
+    report = ConversionService().convert(ConversionOptions("yolo", source, "voc", output, []))
+
+    assert report.failed == 0 and report.succeeded == 1, report.errors
+    assert "<name>class_5</name>" in (output / "Annotations" / "train" / "sample.xml").read_text()

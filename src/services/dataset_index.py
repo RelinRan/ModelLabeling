@@ -11,6 +11,7 @@ from typing import Iterable
 
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+DEFAULT_INDEX_CACHE = Path.home() / "AppData" / "Local" / "ModelLabeling" / "index"
 
 
 @dataclass(frozen=True)
@@ -42,9 +43,10 @@ class DatasetIndexRepository:
         self.image_dir = Path(image_dir).resolve()
         self.annotation_dir = Path(annotation_dir).resolve()
         self.annotation_format = annotation_format.lower()
-        cache_dir = Path.home() / "AppData" / "Local" / "ModelLabeling" / "index"
+        cache_dir = DEFAULT_INDEX_CACHE
         cache_dir.mkdir(parents=True, exist_ok=True)
-        key = hashlib.sha1(str(self.dataset_root).casefold().encode("utf-8")).hexdigest()
+        identity = [str(self.image_dir).casefold(), str(self.annotation_dir).casefold(), self.annotation_format]
+        key = hashlib.sha1(json.dumps(identity).encode("utf-8")).hexdigest()
         self.path = cache_dir / f"{key}.sqlite3"
         self._initialize()
 
@@ -308,6 +310,16 @@ class DatasetIndexRepository:
         coco_labels = self._load_coco_labels() if self.annotation_format == "coco" else {}
         coco_json = self._coco_json_path() if self.annotation_format == "coco" else None
         cached = self._cached_annotation_rows()
+        if self.annotation_format == "yolo":
+            signature = json.dumps(label_names or [], ensure_ascii=False)
+            with self._connect() as connection:
+                previous = connection.execute("SELECT value FROM dataset_meta WHERE key='label_mapping'").fetchone()
+            if previous is None or previous[0] != signature:
+                cached = {}
+                # A cancelled scan may leave a mixture of old and new rows.
+                # Only record the new mapping after all batches are consumed.
+                with self._connect() as connection:
+                    connection.execute("DELETE FROM dataset_meta WHERE key='label_mapping'")
         batch: list[IndexedImage] = []
         for root, _dirs, files in os.walk(self.image_dir):
             for name in files:
@@ -354,6 +366,12 @@ class DatasetIndexRepository:
                     batch = []
         if batch:
             yield batch
+        if self.annotation_format == "yolo" and not (cancel_callback and cancel_callback()):
+            with self._connect() as connection:
+                connection.execute(
+                    "INSERT INTO dataset_meta(key,value) VALUES('label_mapping',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (signature,),
+                )
 
     def _cached_annotation_rows(self) -> dict[str, tuple[int, int, int, int, tuple[str, ...], str]]:
         """Read cached signatures and labels once for an incremental scan."""

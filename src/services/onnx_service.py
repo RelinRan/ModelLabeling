@@ -80,6 +80,8 @@ class YoloOnnxDetector:
         self.input_name: str | None = None
         self.task = "detect"
         self.keypoint_names: list[str] = []
+        self.keypoint_shape: tuple[int, int] | None = None
+        self.keypoint_names_declared = False
         self.class_names: list[str] = []
 
     def load(self, model_path: Path) -> None:
@@ -93,13 +95,23 @@ class YoloOnnxDetector:
         self.task = str(metadata.get("task", "detect")).strip().lower()
         self.class_names = self._metadata_names(metadata.get("names", ""))
         self.keypoint_names = self._metadata_keypoint_names(metadata.get("kpt_names", ""))
+        self.keypoint_names_declared = bool(self.keypoint_names)
+        self.keypoint_shape = None
+        raw_shape = ast.literal_eval(str(metadata.get("kpt_shape", "None")))
+        if raw_shape is not None:
+            if (not isinstance(raw_shape, (tuple, list)) or len(raw_shape) != 2
+                    or int(raw_shape[0]) <= 0 or raw_shape[1] not in (2, 3)):
+                raise ValueError("invalid ONNX kpt_shape metadata")
+            self.keypoint_shape = (int(raw_shape[0]), int(raw_shape[1]))
+            if not self.keypoint_names:
+                self.keypoint_names = [f"keypoint_{i}" for i in range(self.keypoint_shape[0])]
 
     @staticmethod
     def _metadata_names(value: str) -> list[str]:
         try:
             parsed = ast.literal_eval(str(value))
             if isinstance(parsed, dict):
-                return [str(parsed[key]) for key in sorted(parsed)]
+                return [str(parsed[key]) for key in sorted(parsed, key=int)]
             if isinstance(parsed, (list, tuple)):
                 return [str(item) for item in parsed]
         except (ValueError, SyntaxError):
@@ -162,6 +174,8 @@ class YoloOnnxDetector:
         output = outputs[0]
         if self.task == "pose":
             return self._predict_pose(output, source, presets, confidence_threshold, nms_threshold)
+        if self.task == "obb":
+            return self._predict_obb(output, source, presets, confidence_threshold, nms_threshold)
         if self.task in {"segment", "segmentation"}:
             if len(outputs) < 2:
                 raise ValueError("YOLO Segmentation model must provide detection and prototype outputs")
@@ -169,7 +183,7 @@ class YoloOnnxDetector:
                 output, outputs[1], source, presets,
                 confidence_threshold, nms_threshold,
             )
-        rows = self._decode_output(np.asarray(output), len(presets))
+        rows = self._decode_output(np.asarray(output), len(self.class_names) or len(presets))
         candidates = []
         for x1, y1, x2, y2, score, class_id in rows:
             if score < confidence_threshold or not 0 <= class_id < len(presets):
@@ -225,11 +239,12 @@ class YoloOnnxDetector:
         class_count = len(self.class_names) or len(presets)
         raw_width = 4 + class_count + mask_channels
         end_to_end_width = 6 + mask_channels
-        if data.shape[0] in {raw_width, end_to_end_width} and data.shape[1] not in {raw_width, end_to_end_width}:
+        channel_first = data.shape[0] in {raw_width, end_to_end_width} and data.shape[1] not in {raw_width, end_to_end_width}
+        if channel_first:
             data = data.T
         candidates = []
         for row in data:
-            if len(row) == end_to_end_width:
+            if len(row) == end_to_end_width and not (channel_first and len(row) == raw_width):
                 x1, y1, x2, y2, score, raw_class = map(float, row[:6])
                 class_id = int(raw_class)
                 coefficients = row[6:]
@@ -290,6 +305,68 @@ class YoloOnnxDetector:
             for index in range(len(points))
         ) / 2.0
 
+    def _predict_obb(self, output, source, presets, confidence_threshold, nms_threshold):
+        """Decode xywh/classes/angle raw exports and xywh/conf/class/angle NMS exports."""
+        import cv2
+
+        data = np.asarray(output)
+        if data.ndim == 3 and data.shape[0] == 1:
+            data = data[0]
+        if data.ndim != 2:
+            raise ValueError(f"unsupported YOLO OBB output shape: {data.shape}")
+        class_count = len(self.class_names) or len(presets)
+        raw_width = 5 + class_count
+        channel_first = data.shape[0] == raw_width and data.shape[1] != raw_width
+        if channel_first:
+            data = data.T
+        end_to_end = data.shape[1] == 7 and not channel_first
+        if not end_to_end and data.shape[1] != raw_width:
+            raise ValueError(f"unsupported YOLO OBB row width: {data.shape[1]}")
+        candidates = []
+        for row in data:
+            if not np.all(np.isfinite(row)):
+                continue
+            x, y, width, height = map(float, row[:4])
+            if end_to_end:
+                score, raw_class = map(float, row[4:6])
+                if not raw_class.is_integer():
+                    continue
+                class_id = int(raw_class)
+            else:
+                scores = row[4:4 + class_count]
+                class_id = int(np.argmax(scores))
+                score = float(scores[class_id])
+            if score < confidence_threshold or not 0 <= class_id < len(presets) or min(width, height) <= 0:
+                continue
+            if max(abs(x), abs(y), width, height) <= 1.5:
+                x, width = x * source.input_width, width * source.input_width
+                y, height = y * source.input_height, height * source.input_height
+            rotated = ((x, y), (width, height), float(np.degrees(row[-1])))
+            candidates.append((rotated, score, class_id))
+        selected = []
+        for rotated, score, class_id in sorted(candidates, key=lambda item: item[1], reverse=True):
+            suppressed = False
+            for other, _, other_class in selected:
+                if class_id != other_class:
+                    continue
+                _, intersection = cv2.rotatedRectangleIntersection(rotated, other)
+                area = abs(cv2.contourArea(intersection)) if intersection is not None else 0.0
+                union = rotated[1][0] * rotated[1][1] + other[1][0] * other[1][1] - area
+                if union > 0 and area / union > nms_threshold:
+                    suppressed = True
+                    break
+            if not suppressed:
+                selected.append((rotated, score, class_id))
+        results = []
+        for rotated, score, class_id in selected:
+            points = [source.point(float(x), float(y)) for x, y in cv2.boxPoints(rotated)]
+            if abs(self._polygon_area(points)) <= 1e-6:
+                continue
+            label = presets[class_id].name
+            results.append(Annotation(ShapeType.OBB, label, points, color=label_color(label),
+                                      confidence=score, source="onnx"))
+        return results
+
     def _predict_pose(
         self,
         output: np.ndarray,
@@ -304,19 +381,22 @@ class YoloOnnxDetector:
         if data.ndim != 2:
             raise ValueError(f"unsupported YOLO Pose output shape: {data.shape}")
         class_count = len(self.class_names) or len(presets)
-        metadata_keypoints = len(self.keypoint_names)
+        metadata_keypoints = self.keypoint_shape[0] if self.keypoint_shape else len(self.keypoint_names)
+        dimensions = self.keypoint_shape[1] if self.keypoint_shape else 3
         expected_widths = set()
         if metadata_keypoints:
             expected_widths.update({
-                6 + metadata_keypoints * 3,
-                4 + class_count + metadata_keypoints * 3,
-                5 + class_count + metadata_keypoints * 3,
+                6 + metadata_keypoints * dimensions,
+                4 + class_count + metadata_keypoints * dimensions,
+                5 + class_count + metadata_keypoints * dimensions,
             })
-        if data.shape[0] in expected_widths and data.shape[1] not in expected_widths:
+        channel_first = data.shape[0] in expected_widths and data.shape[1] not in expected_widths
+        if channel_first:
             data = data.T
-        if data.shape[1] < 8:
+        if data.shape[1] < 7:
             raise ValueError(f"unsupported YOLO Pose output shape: {data.shape}")
-        rows = self._decode_pose_rows(data, class_count, metadata_keypoints)
+        rows = self._decode_pose_rows(data, class_count, metadata_keypoints, dimensions,
+                                      raw_layout=channel_first)
         candidates = []
         keypoint_count = metadata_keypoints or (len(rows[0][6]) if rows else 0)
         names = self.keypoint_names or [f"keypoint_{index}" for index in range(keypoint_count)]
@@ -325,7 +405,8 @@ class YoloOnnxDetector:
                 continue
             raw_keypoints = []
             for index in range(keypoint_count):
-                x, y, visibility = map(float, values[index * 3:index * 3 + 3])
+                x, y = map(float, values[index * dimensions:index * dimensions + 2])
+                visibility = float(values[index * dimensions + 2]) if dimensions == 3 else 1.0
                 if max(abs(x), abs(y)) <= 1.5:
                     x *= source.input_width
                     y *= source.input_height
@@ -358,15 +439,16 @@ class YoloOnnxDetector:
 
     @staticmethod
     def _decode_pose_rows(
-        data: np.ndarray, class_count: int, keypoint_count: int,
+        data: np.ndarray, class_count: int, keypoint_count: int, dimensions: int = 3,
+        raw_layout: bool = False,
     ) -> list[tuple[float, float, float, float, float, int, np.ndarray]]:
         width = data.shape[1]
-        end_to_end_width = 6 + keypoint_count * 3 if keypoint_count else -1
-        raw_width = 4 + class_count + keypoint_count * 3 if keypoint_count else -1
-        objectness_width = 5 + class_count + keypoint_count * 3 if keypoint_count else -1
+        end_to_end_width = 6 + keypoint_count * dimensions if keypoint_count else -1
+        raw_width = 4 + class_count + keypoint_count * dimensions if keypoint_count else -1
+        objectness_width = 5 + class_count + keypoint_count * dimensions if keypoint_count else -1
         rows = []
         for row in data:
-            if width == end_to_end_width:
+            if width == end_to_end_width and not (raw_layout and width in {raw_width, objectness_width}):
                 x1, y1, x2, y2, score, raw_class = map(float, row[:6])
                 class_id = int(raw_class)
                 keypoints = row[6:]
@@ -385,7 +467,7 @@ class YoloOnnxDetector:
                     f"unsupported YOLO Pose row width {width}; "
                     "model metadata must define matching names, kpt_names, and kpt_shape"
                 )
-            if len(keypoints) != keypoint_count * 3:
+            if len(keypoints) != keypoint_count * dimensions:
                 raise ValueError("YOLO Pose keypoint columns do not match model metadata")
             rows.append((x1, y1, x2, y2, float(score), class_id, keypoints))
         return rows
@@ -397,15 +479,16 @@ class YoloOnnxDetector:
             data = data[0]
         if data.ndim != 2:
             raise ValueError(f"unsupported YOLO output shape: {output.shape}")
-        if 6 <= data.shape[0] < data.shape[1] and data.shape[0] <= 128:
+        channel_first = data.shape[0] in {4 + class_count, 5 + class_count} and data.shape[1] not in {4 + class_count, 5 + class_count, 6}
+        if channel_first or (6 <= data.shape[0] < data.shape[1] and data.shape[0] <= 128):
             data = data.T
         rows: list[tuple[float, float, float, float, float, int]] = []
         for row in data:
-            if len(row) < 6:
+            if len(row) < 5 or not np.all(np.isfinite(row)):
                 continue
             width = len(row)
             # Some exports include NMS and return [x1, y1, x2, y2, score, class].
-            if width == 6 and float(row[5]).is_integer() and 0 <= int(row[5]) < max(class_count, 1):
+            if not channel_first and width == 6 and float(row[5]).is_integer() and 0 <= int(row[5]) < max(class_count, 1):
                 x1, y1, x2, y2, score, class_id = map(float, row)
                 rows.append((x1, y1, x2, y2, float(score), int(class_id)))
                 continue

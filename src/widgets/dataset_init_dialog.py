@@ -51,7 +51,7 @@ class DatasetInitDialog(QDialog):
 
         self.name_edit = QLineEdit()
         self.name_edit.setPlaceholderText("如 model-dataset" if not self.english else "e.g. model-dataset")
-        basic.addRow("数据集合" if not self.english else "Name", self.name_edit)
+        basic.addRow("数据集" if not self.english else "Name", self.name_edit)
 
         self.source_edit = QLineEdit()
         self.source_edit.setPlaceholderText(

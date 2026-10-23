@@ -15,7 +15,7 @@ from collections import Counter
 
 from PySide6.QtCore import QEvent, QSettings, QThread, Qt, QTimer
 from PySide6.QtGui import QColor, QCursor, QIcon, QImage, QKeySequence, QShortcut
-from PySide6.QtWidgets import QApplication, QFileDialog, QComboBox, QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMenu, QProgressBar, QSplitter, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QFileDialog, QAbstractSpinBox, QComboBox, QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMenu, QPlainTextEdit, QProgressBar, QSplitter, QTextEdit, QVBoxLayout, QWidget
 
 from src.models.annotation import Annotation, LabelPreset, ShapeType, label_color
 from src.models.keypoint import COCO_PERSON_KEYPOINTS
@@ -31,6 +31,7 @@ from src.services.operation_coordinator import OperationCoordinator
 from src.services.dataset_session import DatasetScanResult, DatasetSession
 from src.services.workers import AutoLabelWorker, DatasetAnnotationSaveWorker, DatasetCountWorker, DatasetScanWorker, DatasetStatisticsWorker, SaveWorker, SingleImageAnnotationWorker
 from src.services.format_capabilities import CAPABILITIES, task_for_format
+from src.services.display_names import format_task_name
 from src.services.yolo_metadata import write_kpt_shape, yolo_keypoint_names, yolo_keypoint_shape
 from .annotation_edit_dialog import AnnotationEditDialog
 from .common_dialogs import AppDialog
@@ -41,6 +42,7 @@ from .crosshair_dialog import CrosshairDialog
 from .dataset_init_dialog import DatasetInitDialog
 from .error_messages import translate_error
 from .help_dialogs import AboutDialog, ShortcutsDialog, UsageGuideDialog
+from .shortcut_registry import COMMAND_HANDLERS, chord_commands, shortcut
 from .history_dialog import HistoryDialog
 from .image_filter_dialog import ImageFilterDialog
 from .image_list_panel import ImageListPanel
@@ -123,6 +125,7 @@ class MainWindow(QMainWindow):
         self._stats_thread = self._stats_worker = None
         self._dataset_statistics: dict | None = None
         self._statistics_completed = False
+        self._statistics_error = ""
         self._dataset_cancel_requested = False
         self._dataset_load_succeeded = False
         self._dataset_scan_completed = False
@@ -153,6 +156,7 @@ class MainWindow(QMainWindow):
         self._last_save_error = None
         self._saved_annotation_labels: dict[str, Counter[str]] = {}
         self._shortcut_chord: str | None = None
+        self._shortcut_chord_generation = 0
         self._startup_reopen_done = False
         self._pending_save_statistics: tuple[str, Counter[str], Counter[str]] | None = None
         self._restart_statistics_after_finish = False
@@ -164,68 +168,92 @@ class MainWindow(QMainWindow):
             app.installEventFilter(self)
 
     def eventFilter(self, watched, event) -> bool:
+        if event.type() in {QEvent.Type.ShortcutOverride, QEvent.Type.KeyPress}:
+            focus = QApplication.focusWidget()
+            if (
+                focus is None or focus.window() is not self
+                or isinstance(focus, (QLineEdit, QComboBox, QAbstractSpinBox, QPlainTextEdit, QTextEdit))
+            ):
+                self._clear_shortcut_chord()
+                return super().eventFilter(watched, event)
+            # Reserve chord keys before Qt resolves canvas-local exact shortcuts.
+            ctrl = Qt.KeyboardModifier.ControlModifier
+            starts = {ord(prefix) for prefix, _ in chord_commands()}
+            if event.type() == QEvent.Type.ShortcutOverride and (
+                self._shortcut_chord or (event.modifiers() == ctrl and event.key() in starts)
+            ):
+                event.accept()
+                return True
         if event.type() == QEvent.Type.KeyPress and not event.isAutoRepeat():
+            if event.key() in {Qt.Key.Key_Control, Qt.Key.Key_Shift, Qt.Key.Key_Alt, Qt.Key.Key_Meta}:
+                return super().eventFilter(watched, event)
             focus = QApplication.focusWidget()
             if not isinstance(focus, (QLineEdit, QComboBox)):
                 modifiers = event.modifiers()
                 key = event.key()
-                chord_start = {
-                    Qt.Key.Key_L: "L",
-                    Qt.Key.Key_K: "K",
-                    Qt.Key.Key_A: "A",
-                    Qt.Key.Key_I: "I",
-                    Qt.Key.Key_C: "C",
-                    Qt.Key.Key_D: "D",
-                    Qt.Key.Key_T: "T",
-                }.get(key) if modifiers & Qt.KeyboardModifier.ControlModifier else None
-                if chord_start:
-                    self._shortcut_chord = chord_start
-                    QTimer.singleShot(1200, self._clear_shortcut_chord)
+                commands = chord_commands()
+                prefixes = {ord(prefix): prefix for prefix, _ in commands}
+                chord_start = prefixes.get(key) if modifiers == Qt.KeyboardModifier.ControlModifier else None
+                if chord_start and not self._shortcut_chord:
+                    self._start_shortcut_chord(chord_start, focus)
                     event.accept()
                     return True
                 if self._shortcut_chord:
-                    # A start letter carries every command that hangs off it and
-                    # the second stroke picks one: Ctrl+D is both 数据合成 (S)
-                    # and 数据对比 (P). V is deliberately not a start letter --
-                    # Ctrl+V has to stay free for pasting in text fields.
-                    action = {
-                        "L": {Qt.Key.Key_G: self.open_label_groups},
-                        "K": {Qt.Key.Key_G: self.open_keypoint_groups},
-                        "A": {Qt.Key.Key_S: self.open_settings},
-                        "I": {Qt.Key.Key_F: self.open_image_filter},
-                        "C": {Qt.Key.Key_A: self.open_crosshair},
-                        "D": {
-                            Qt.Key.Key_S: self.open_dataset_synthesis,
-                            Qt.Key.Key_P: self.open_dataset_compare,
-                        },
-                        "T": {Qt.Key.Key_S: self.open_statistics},
-                    }.get(self._shortcut_chord, {}).get(key)
+                    # Resolve the second stroke before interpreting it as a new
+                    # prefix, including when the user keeps Ctrl held.
+                    handler_name = commands.get((self._shortcut_chord, chr(key))) if 0 <= key <= 0x10ffff else None
+                    action = getattr(self, handler_name) if handler_name else None
                     self._clear_shortcut_chord()
-                    if action is not None and not modifiers:
+                    if action is not None and modifiers in {
+                        Qt.KeyboardModifier.NoModifier, Qt.KeyboardModifier.ControlModifier,
+                    }:
                         action()
+                        event.accept()
+                        return True
+                    if chord_start:
+                        self._start_shortcut_chord(chord_start, focus)
                         event.accept()
                         return True
             # W is global for annotation mode after any non-text panel click.
             # Text editors and combo boxes were filtered above, so their W
             # input remains untouched.
-            if event.key() == Qt.Key.Key_W:
+            if event.key() == Qt.Key.Key_W and event.modifiers() == Qt.KeyboardModifier.NoModifier:
                 self._toggle_canvas_drawing()
                 event.accept()
                 return True
         return super().eventFilter(watched, event)
 
+    def _start_shortcut_chord(self, prefix: str, focus: QWidget) -> None:
+        self._shortcut_chord = prefix
+        self._shortcut_chord_generation += 1
+        generation = self._shortcut_chord_generation
+        on_canvas = focus is self.canvas or self.canvas.isAncestorOf(focus)
+        if on_canvas:
+            editing = {"A": self.canvas.select_all, "C": self.canvas.copy_selected}.get(prefix)
+            if editing is not None:
+                editing()
+
+        def expire():
+            if generation != self._shortcut_chord_generation or self._shortcut_chord != prefix:
+                return
+            self._clear_shortcut_chord()
+            current = QApplication.focusWidget()
+            if prefix == "V" and on_canvas and (current is self.canvas or self.canvas.isAncestorOf(current)):
+                self.canvas.paste_clipboard()
+
+        # Defer destructive paste until the video-tool chord can be ruled out.
+        QTimer.singleShot(1200, self, expire)
+
     def _clear_shortcut_chord(self) -> None:
         self._shortcut_chord = None
+        self._shortcut_chord_generation += 1
 
     def _format_display_name(self) -> str:
-        return {
-            "yolo_detection": "YOLO Detection",
-            "yolo_segmentation": "YOLO Segmentation",
-            "yolo_pose": "YOLO Pose",
-            "yolo_obb": "YOLO OBB",
-            "coco": "COCO",
-            "voc": "Pascal VOC",
-        }.get(self.settings.dataset_task or self.settings.annotation_format, self.settings.annotation_format)
+        return format_task_name(
+            self.settings.annotation_format,
+            self.settings.dataset_task,
+            self.settings.language or "zh_CN",
+        )
 
     def _update_window_title(self) -> None:
         root = self.settings.image_dir
@@ -318,74 +346,49 @@ class MainWindow(QMainWindow):
         file_menu = bar.addMenu("File" if english else "文件"); edit_menu = bar.addMenu("Edit" if english else "编辑"); view_menu = bar.addMenu("View" if english else "查看"); tools_menu = bar.addMenu("Tools" if english else "工具"); help_menu = bar.addMenu("Help" if english else "帮助")
         # File menu follows the common daily order: create / open / recent,
         # then save, then exit.
-        self._action(file_menu, tr("新建  Ctrl+N", "New  Ctrl+N"), self.open_dataset_init)
-        self._action(file_menu, tr("打开  Ctrl+O", "Open  Ctrl+O"), self.open_directory)
-        self.history_menu = file_menu.addMenu(tr("历史  Ctrl+H", "History  Ctrl+H")); self.history_menu_action = self.history_menu.menuAction()
+        self._action(file_menu, shortcut("new").menu_text(english), self.open_dataset_init)
+        self._action(file_menu, shortcut("open").menu_text(english), self.open_directory)
+        self.history_menu = file_menu.addMenu(shortcut("history").menu_text(english)); self.history_menu_action = self.history_menu.menuAction()
         self.history_menu.aboutToShow.connect(self._refresh_history_menu)
         self._action(self.history_menu, tr("管理历史", "Manage History"), self.open_history)
         file_menu.addSeparator()
-        self.save_action = self._action(file_menu, tr("保存  Ctrl+S", "Save  Ctrl+S"), self.save_current)
+        self.save_action = self._action(file_menu, shortcut("save").menu_text(english), self.save_current)
         file_menu.addSeparator()
-        self._action(file_menu, tr("退出  Ctrl+Q", "Exit  Ctrl+Q"), self.close)
+        self._action(file_menu, shortcut("quit").menu_text(english), self.close)
         # Edit menu: drawing assist and filtering first, settings last.
-        self._action(edit_menu, tr("标注辅助  Ctrl+C+A", "Annotation Assist  Ctrl+C+A"), self.open_crosshair)
-        self._action(edit_menu, tr("文件筛选  Ctrl+I+F", "File Filter  Ctrl+I+F"), self.open_image_filter)
-        self._action(edit_menu, tr("标签分组  Ctrl+L+G", "Label Groups  Ctrl+L+G"), self.open_label_groups)
-        self._action(edit_menu, tr("点位类型  Ctrl+K+G", "Keypoint Types  Ctrl+K+G"), self.open_keypoint_groups)
-        self._action(edit_menu, tr("参数设置  Ctrl+A+S", "Settings  Ctrl+A+S"), self.open_settings)
-        self._action(view_menu, tr("适应画布  Ctrl+0", "Fit Canvas  Ctrl+0"), self.canvas.fit_image)
-        self._action(view_menu, tr("图片放大  Ctrl++", "Image Zoom In  Ctrl++"), self.canvas.zoom_in)
-        self._action(view_menu, tr("图片缩小  Ctrl+-", "Image Zoom Out  Ctrl+-"), self.canvas.zoom_out)
-        self._action(view_menu, tr("上张图片  A/↑", "Previous Image  A/↑"), self.previous_image)
-        self._action(view_menu, tr("下张图片  D/↓", "Next Image  D/↓"), self.next_image)
-        self._action(tools_menu, tr("数据统计  Ctrl+T+S", "Statistics  Ctrl+T+S"), self.open_statistics)
-        self._action(tools_menu, tr("数据对比  Ctrl+D+P", "Compare Dataset  Ctrl+D+P"), self.open_dataset_compare)
-        self._action(tools_menu, tr("数据转换  Ctrl+D+C", "Dataset Conversion  Ctrl+D+C"), self.open_conversion)
-        self._action(tools_menu, "\u89c6\u9891\u63d0\u5e27  Ctrl+V+F" if not english else "Extract Video Frames  Ctrl+V+F", self.open_video_frames)
-        self._action(tools_menu, "\u6570\u636e\u5408\u6210  Ctrl+D+S" if not english else "Synthesize Dataset  Ctrl+D+S", self.open_dataset_synthesis)
-        self._action(tools_menu, tr("清理数据  Ctrl+C+D", "Clean Dataset  Ctrl+C+D"), self.open_cleanup)
-        self._action(tools_menu, tr("自动标注  Ctrl+A+L", "Auto Label  Ctrl+A+L"), self.auto_label_all)
+        self._action(edit_menu, shortcut("annotation_assist").menu_text(english), self.open_crosshair)
+        self._action(edit_menu, shortcut("file_filter").menu_text(english), self.open_image_filter)
+        self._action(edit_menu, shortcut("label_groups").menu_text(english), self.open_label_groups)
+        self._action(edit_menu, shortcut("keypoint_groups").menu_text(english), self.open_keypoint_groups)
+        self._action(edit_menu, shortcut("settings").menu_text(english), self.open_settings)
+        self._action(view_menu, shortcut("fit").menu_text(english), self.canvas.fit_image)
+        self._action(view_menu, shortcut("zoom_in").menu_text(english), self.canvas.zoom_in)
+        self._action(view_menu, shortcut("zoom_out").menu_text(english), self.canvas.zoom_out)
+        self._action(view_menu, shortcut("previous").menu_text(english), self.previous_image)
+        self._action(view_menu, shortcut("next").menu_text(english), self.next_image)
+        self._action(tools_menu, shortcut("statistics").menu_text(english), self.open_statistics)
+        self._action(tools_menu, shortcut("dataset_compare").menu_text(english), self.open_dataset_compare)
+        self._action(tools_menu, shortcut("conversion").menu_text(english), self.open_conversion)
+        self._action(tools_menu, shortcut("video_frames").menu_text(english), self.open_video_frames)
+        self._action(tools_menu, shortcut("dataset_synthesis").menu_text(english), self.open_dataset_synthesis)
+        self._action(tools_menu, shortcut("cleanup").menu_text(english), self.open_cleanup)
+        self._action(tools_menu, shortcut("auto_label").menu_text(english), self.auto_label_all)
         self._action(help_menu, tr("使用说明", "User Guide"), lambda: UsageGuideDialog(self).exec())
         self._action(help_menu, tr("快捷按键", "Shortcuts"), lambda: ShortcutsDialog(self).exec())
         self._action(help_menu, tr("关于软件", "About Software"), lambda: AboutDialog(self).exec())
+        for old_shortcut in getattr(self, "_shortcuts", ()):
+            old_shortcut.setEnabled(False)
+            old_shortcut.deleteLater()
         self._shortcuts = []
         shortcut_bindings = (
-            ("Ctrl+H", self.open_history),
-            ("Ctrl+O", self.open_directory),
-            ("Ctrl+N", self.open_dataset_init),
-            ("Ctrl+S", self.save_current),
-            ("Ctrl+Q", self.close),
-            # Register both forms for multi-key commands. Qt treats the
-            # comma form as a two-stroke sequence; the second form also
-            # matches users who keep Ctrl held while pressing the final key.
-            ("Ctrl+L, G", self.open_label_groups),
-            ("Ctrl+L, Ctrl+G", self.open_label_groups),
-            ("Ctrl+K, G", self.open_keypoint_groups),
-            ("Ctrl+K, Ctrl+G", self.open_keypoint_groups),
-            ("Ctrl+A, S", self.open_settings),
-            ("Ctrl+A, Ctrl+S", self.open_settings),
-            ("Ctrl+I, F", self.open_image_filter),
-            ("Ctrl+I, Ctrl+F", self.open_image_filter),
-            ("Ctrl+C, A", self.open_crosshair),
-            ("Ctrl+C, Ctrl+A", self.open_crosshair),
-            ("Ctrl+0", self.canvas.fit_image),
-            ("Ctrl++", self.canvas.zoom_in),
-            ("Ctrl+-", self.canvas.zoom_out),
-            ("A", lambda: self._navigate_shortcut(-1)),
-            ("Up", lambda: self._navigate_shortcut(-1)),
-            ("D", lambda: self._navigate_shortcut(1)),
-            ("Down", lambda: self._navigate_shortcut(1)),
-            ("Ctrl+D, S", self.open_dataset_synthesis),
-            ("Ctrl+D, Ctrl+S", self.open_dataset_synthesis),
-            ("Ctrl+D, P", self.open_dataset_compare),
-            ("Ctrl+D, Ctrl+P", self.open_dataset_compare),
-            ("Ctrl+T, S", self.open_statistics),
-            ("Ctrl+V, F", self.open_video_frames),
-            ("Ctrl+V, Ctrl+F", self.open_video_frames),
-            ("Ctrl+C, D", self.open_cleanup),
-            ("Ctrl+C, Ctrl+D", self.open_cleanup),
-            ("Ctrl+A, L", self.auto_label_all),
-            ("Ctrl+A, Ctrl+L", self.auto_label_all),
+            *[(key, getattr(self, handler))
+              for command, handler in COMMAND_HANDLERS.items()
+              for key in shortcut(command).qt_sequences],
+            *[(key, self.canvas.fit_image) for key in shortcut("fit").qt_sequences],
+            *[(key, self.canvas.zoom_in) for key in shortcut("zoom_in").qt_sequences],
+            *[(key, self.canvas.zoom_out) for key in shortcut("zoom_out").qt_sequences],
+            *[(key, lambda: self._navigate_shortcut(-1)) for key in shortcut("previous").qt_sequences],
+            *[(key, lambda: self._navigate_shortcut(1)) for key in shortcut("next").qt_sequences],
             ("W", self._drawing_shortcut),
             ("Escape", self.canvas._disable_draw_mode),
             ("Delete", self._delete_shortcut),
@@ -403,17 +406,17 @@ class MainWindow(QMainWindow):
         canvas_keys = {"A", "Up", "D", "Down", "W", "Escape", "Delete", "Backspace", "Ctrl+Z", "Ctrl+Y", "Ctrl+Shift+Z"}
         for key, handler in shortcut_bindings:
             parent = self.canvas if key in canvas_keys else self
-            shortcut = QShortcut(QKeySequence(key), parent)
-            shortcut.setContext(
+            key_shortcut = QShortcut(QKeySequence(key), parent)
+            key_shortcut.setContext(
                 Qt.ShortcutContext.WidgetWithChildrenShortcut
                 if key in canvas_keys else Qt.ShortcutContext.WindowShortcut
             )
-            shortcut.activated.connect(handler); self._shortcuts.append(shortcut)
+            key_shortcut.activated.connect(handler); self._shortcuts.append(key_shortcut)
 
     @staticmethod
     def _shortcut_input_focused() -> bool:
         focus = QApplication.focusWidget()
-        return isinstance(focus, (QLineEdit, QComboBox))
+        return isinstance(focus, (QLineEdit, QComboBox, QAbstractSpinBox, QPlainTextEdit, QTextEdit))
 
     def _navigate_shortcut(self, step: int) -> None:
         if self._shortcut_input_focused():
@@ -461,9 +464,18 @@ class MainWindow(QMainWindow):
         self.settings.keypoint_count = int(count)
         if (self.settings.dataset_task or "") != "yolo_pose" or not self.dataset_root:
             return
-        names = None if int(count) == 17 else list(self.canvas.keypoint_schema)
+        names = list(self.canvas.keypoint_schema)
         try:
-            write_kpt_shape(self.dataset_root, int(count), 3, names)
+            shape = yolo_keypoint_shape(self.dataset_root)
+            declared_names = yolo_keypoint_names(self.dataset_root)
+            if shape and (shape[0] != int(count) or (declared_names and names and declared_names != names)):
+                self.settings.keypoint_count = shape[0]
+                self._restore_keypoint_group()
+                AppDialog.information("提示", "所选点位类型与数据集的关键点结构不一致，请使用匹配的类型或新建数据集。"
+                                      if self.settings.language != "en_US" else
+                                      "The selected keypoint type differs from the dataset schema. Use a matching type or create a new dataset.", self)
+                return
+            write_kpt_shape(self.dataset_root, int(count), shape[1] if shape else 3, names)
         except Exception as exc:  # a malformed yaml must not crash the canvas
             AppDialog.information("提示", f"写入 kpt_shape 失败: {exc}", self)
 
@@ -598,6 +610,7 @@ class MainWindow(QMainWindow):
             except (OSError, ValueError):
                 shape = None
             if shape is not None:
+                self.settings.keypoint_dimensions = shape[1]
                 self.canvas.set_keypoint_count(shape[0], keypoint_names)
         else:
             self.canvas.set_keypoint_count(self.settings.keypoint_count)
@@ -606,6 +619,23 @@ class MainWindow(QMainWindow):
         self._restore_keypoint_group()
 
     def _restore_keypoint_group(self) -> None:
+        if self.settings.dataset_task == "yolo_pose" and self.settings.annotation_dir:
+            try:
+                shape = yolo_keypoint_shape(self.settings.annotation_dir)
+                if shape:
+                    names = yolo_keypoint_names(self.settings.annotation_dir)
+                    matching = next((group.name for group in self.settings.keypoint_groups
+                                     if len(group.keypoint_names) == shape[0]
+                                     and (not names or list(group.keypoint_names) == names)), None)
+                    combo = self.canvas.keypoint_group_box
+                    combo.blockSignals(True)
+                    combo.setCurrentIndex(combo.findData(matching) if matching else -1)
+                    combo.blockSignals(False)
+                    # Dataset metadata wins over the last template selection.
+                    self.canvas.set_keypoint_count(shape[0], names)
+                    return
+            except (OSError, ValueError):
+                return
         active = self.canvas.active_keypoint_group()
         if active is not None:
             self.canvas.apply_keypoint_group_by_name(active)
@@ -1056,6 +1086,9 @@ class MainWindow(QMainWindow):
                 self,
             )
             return
+        if getattr(self, "_statistics_error", ""):
+            AppDialog.information("提示", self._statistics_error, self)
+            return
         StatsDialog(self._dataset_statistics or self.state.statistics(), self.settings.language, self).exec()
 
     def open_cleanup(self) -> None:
@@ -1436,8 +1469,13 @@ class MainWindow(QMainWindow):
         self.dataset_indexed_images = 0
         self.dataset_parser_presets = []
         self.dataset_current_index = -1
+        scan_root = (
+            self.dataset_session.root
+            if self.dataset_session is not None and self.dataset_session.image_dir.resolve() == image_dir.resolve()
+            else image_dir.parent.resolve()
+        )
         self.dataset_index_repository = DatasetIndexRepository(
-            image_dir.parent.resolve(), image_dir, annotation_dir, self.settings.annotation_format
+            scan_root, image_dir, annotation_dir, self.settings.annotation_format
         )
         self.state.images = []
         self.state.current_index = -1
@@ -1459,7 +1497,7 @@ class MainWindow(QMainWindow):
                 self._stats_worker.cancelled = True
             stats_thread.join(timeout=15)
         self._stats_thread = self._stats_worker = None
-        self._dataset_cancel_requested = False; self._dataset_load_succeeded = False; self._dataset_scan_completed = False; self._dataset_task_dialog_shown = False; self._dataset_initial_item_selected = False; self._dataset_user_navigated = False; self.dataset_root = image_dir.parent.resolve(); self._set_dataset_loading(True, "加载"); self._dataset_dialog_guard.start(); self._dataset_thread = QThread(self); self._dataset_worker = DatasetScanWorker(image_dir, annotation_dir, ProjectSettings.from_dict(self.settings.to_dict()), self.dataset_root, self.dataset_session_id); self.dataset_task_id = self.task_manager.start("打开数据集", self.cancel_dataset_scan, 0); self._dataset_worker.moveToThread(self._dataset_thread); self._dataset_thread.started.connect(self._dataset_worker.run); self._dataset_worker.progress.connect(self._dataset_scan_progress); self._dataset_worker.partial.connect(self._dataset_scan_partial); self._dataset_worker.finished.connect(self._dataset_scan_finished); self._dataset_worker.failed.connect(self._dataset_scan_failed); self._dataset_worker.finished.connect(self._dataset_thread.quit); self._dataset_worker.failed.connect(self._dataset_thread.quit); self._dataset_thread.finished.connect(self._dataset_thread_finished); QTimer.singleShot(0, self._dataset_thread.start)
+        self._dataset_cancel_requested = False; self._dataset_load_succeeded = False; self._dataset_scan_completed = False; self._dataset_task_dialog_shown = False; self._dataset_initial_item_selected = False; self._dataset_user_navigated = False; self.dataset_root = scan_root; self._set_dataset_loading(True, "加载"); self._dataset_dialog_guard.start(); self._dataset_thread = QThread(self); self._dataset_worker = DatasetScanWorker(image_dir, annotation_dir, ProjectSettings.from_dict(self.settings.to_dict()), self.dataset_root, self.dataset_session_id); self.dataset_task_id = self.task_manager.start("打开数据集", self.cancel_dataset_scan, 0); self._dataset_worker.moveToThread(self._dataset_thread); self._dataset_thread.started.connect(self._dataset_worker.run); self._dataset_worker.progress.connect(self._dataset_scan_progress); self._dataset_worker.partial.connect(self._dataset_scan_partial); self._dataset_worker.finished.connect(self._dataset_scan_finished); self._dataset_worker.failed.connect(self._dataset_scan_failed); self._dataset_worker.finished.connect(self._dataset_thread.quit); self._dataset_worker.failed.connect(self._dataset_thread.quit); self._dataset_thread.finished.connect(self._dataset_thread_finished); QTimer.singleShot(0, self._dataset_thread.start)
         self._count_thread = QThread(self)
         self._count_worker = DatasetCountWorker(image_dir, self.dataset_session_id)
         self._count_worker.moveToThread(self._count_thread)
@@ -1697,6 +1735,7 @@ class MainWindow(QMainWindow):
         if self._stats_thread is not None or not self.settings.image_dir or not self.settings.annotation_dir:
             return
         self._statistics_completed = False
+        self._statistics_error = ""
         session_id = self.dataset_session_id
         self._set_status_progress("统计", 0, self.dataset_total_images)
         worker = DatasetStatisticsWorker(
@@ -1760,7 +1799,13 @@ class MainWindow(QMainWindow):
         if session_id is not None and session_id != self.dataset_session_id:
             return
         self._dataset_statistics = None
-        self._statistics_completed = True
+        self._statistics_completed = False
+        self._statistics_error = message or (
+            "Dataset statistics failed." if self.settings.language == "en_US" else "数据统计失败。"
+        )
+        self.status_progress_host.setVisible(False)
+        if self.isVisible():
+            AppDialog.information("提示", self._statistics_error, self)
 
     def _dataset_thread_finished(self) -> None:
         self.task_manager.finish(self.dataset_task_id); self.dataset_task_id = None; self._dataset_thread = self._dataset_worker = None
@@ -1880,6 +1925,11 @@ class MainWindow(QMainWindow):
         self._save_worker = None
         self._pending_save_statistics = None
         if not error:
+            if (isinstance(worker, DatasetAnnotationSaveWorker)
+                    and worker.image_dir == self.settings.image_dir
+                    and worker.annotation_dir == self.settings.annotation_dir
+                    and worker.settings.annotation_format == "yolo"):
+                self.dataset_parser_presets = list(worker.settings.label_presets)
             self._apply_saved_annotation_statistics(pending_statistics)
         if error:
             # Defer the modal dialog out of the save-thread signal callback:
@@ -1957,7 +2007,22 @@ class MainWindow(QMainWindow):
         self._dataset_statistics = statistics
 
     def _start_conversion(self, options) -> None:
-        self._conversion_cancel_requested = False; self._conversion_thread = QThread(self); self._conversion_worker = ConversionWorker(options); self.conversion_task_id = self.task_manager.start("数据集转换", self.cancel_conversion, self._count_images(options.source_path)); self._conversion_worker.moveToThread(self._conversion_thread); self._conversion_thread.started.connect(self._conversion_worker.run); self._conversion_worker.progress.connect(self._conversion_progress); self._conversion_worker.completed.connect(self._conversion_finished); self._conversion_worker.failed.connect(self._conversion_failed); self._conversion_worker.completed.connect(self._conversion_thread.quit); self._conversion_worker.failed.connect(self._conversion_thread.quit); self._conversion_thread.finished.connect(self._conversion_thread_finished); self._set_status_progress("转换", 0, self.task_manager.tasks()[-1].total if self.task_manager.tasks() else 0); self._conversion_thread.start()
+        self._conversion_cancel_requested = False
+        self._conversion_thread = QThread(self)
+        self._conversion_worker = ConversionWorker(options)
+        # The worker discovers the total while enumerating the source. Avoid
+        # a second full directory traversal on the GUI thread before it starts.
+        self.conversion_task_id = self.task_manager.start("数据集转换", self.cancel_conversion, 0)
+        self._conversion_worker.moveToThread(self._conversion_thread)
+        self._conversion_thread.started.connect(self._conversion_worker.run)
+        self._conversion_worker.progress.connect(self._conversion_progress)
+        self._conversion_worker.completed.connect(self._conversion_finished)
+        self._conversion_worker.failed.connect(self._conversion_failed)
+        self._conversion_worker.completed.connect(self._conversion_thread.quit)
+        self._conversion_worker.failed.connect(self._conversion_thread.quit)
+        self._conversion_thread.finished.connect(self._conversion_thread_finished)
+        self._set_status_progress("转换", 0, 0)
+        self._conversion_thread.start()
 
     def _conversion_progress(self, current: int, total: int) -> None:
         percent = int(current / total * 100) if total else 0
@@ -1990,7 +2055,7 @@ class MainWindow(QMainWindow):
             english = self.settings.language == "en_US"
             if AppDialog.question(
                 "自动标注" if not english else "Auto Label",
-                "尚未设置 YOLO 模型。是否现在打开参数设置选择模型？" if not english
+                "尚未设置 YOLO 模型。是否现在打开应用设置选择模型？" if not english
                 else "No ONNX model selected. Open Application Settings now?",
                 self,
             ):
@@ -2044,6 +2109,12 @@ class MainWindow(QMainWindow):
         elif task in {"segment", "segmentation"} and self.settings.annotation_format in {"yolo", "coco"}:
             if self.settings.annotation_format == "yolo":
                 self.settings.dataset_task = "yolo_segmentation"
+            self._apply_annotation_capabilities()
+        elif task == "obb" and self.settings.annotation_format == "yolo":
+            self.settings.dataset_task = "yolo_obb"
+            self._apply_annotation_capabilities()
+        elif task == "detect" and self.settings.annotation_format == "yolo":
+            self.settings.dataset_task = "yolo_detection"
             self._apply_annotation_capabilities()
 
     def _auto_annotation_ready(self, path: str, annotations: list[Annotation]) -> None:
@@ -2125,7 +2196,9 @@ class MainWindow(QMainWindow):
 
         threads = (
             self._dataset_thread,
+            self._count_thread,
             self._conversion_thread,
+            self._compare_thread,
             self._video_tools_thread,
             self._auto_thread,
             self._annotation_thread,

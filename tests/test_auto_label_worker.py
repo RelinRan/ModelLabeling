@@ -126,7 +126,8 @@ def test_auto_label_reads_complete_dataset_from_index(tmp_path):
     assert loaded[-1].path.name == "01199.jpg"
 
 
-def test_statistics_worker_processes_index_pages_incrementally(tmp_path):
+def test_statistics_worker_processes_index_pages_incrementally(tmp_path, monkeypatch):
+    monkeypatch.setattr("src.services.workers.monotonic", lambda: 0.0)
     image_dir = tmp_path / "images"
     annotation_dir = tmp_path / "labels"
     image_dir.mkdir(); annotation_dir.mkdir()
@@ -152,4 +153,5 @@ def test_statistics_worker_processes_index_pages_incrementally(tmp_path):
 
     assert progress[0] == 0
     assert progress[-1] == 1200
+    assert len(progress) == 2
     assert finished and finished[0]["total_images"] == 1200

@@ -93,6 +93,22 @@ def test_opening_a_dataset_shows_its_first_image(tmp_path, monkeypatch):
         _drop_index_cache(root)
 
 
+def test_opening_plain_images_preserves_the_selected_dataset_root(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    root = tmp_path / "photos"
+    root.mkdir()
+    Image.new("RGB", (100, 100), "red").save(root / "sample.jpg")
+    window = MainWindow()
+    try:
+        window._start_open_path(root)
+        assert _pump_until_loaded(app, window)
+        assert window.dataset_root == root.resolve()
+        assert window.dataset_session.root == root.resolve()
+        assert window.state.current_image.path == root / "sample.jpg"
+    finally:
+        window.close()
+
+
 def test_switching_datasets_clears_the_preview(tmp_path, monkeypatch):
     app = QApplication.instance() or QApplication([])
     first = _make_dataset(tmp_path / "one")

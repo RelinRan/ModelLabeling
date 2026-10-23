@@ -33,7 +33,7 @@ A Windows-first Python/PySide6 desktop annotation workbench for YOLO / Pascal VO
 | Keypoint types | Predefined point count, point names, and annotation label (Ctrl+K+G); built-in Pose (17 COCO person points, `pose`) and Car (`car`); picking a type on the canvas arms its whole schema |
 | Dataset creation | Workspace wizard: workspace + name + options; source images are copied in (existing datasets import their annotations too) |
 | Compatibility | Fully unannotated datasets open directly (empty labels/, no Annotations/, plain image folders) |
-| Auto labeling | ONNX inference; official YOLO detection/Pose models; runs in background, stoppable |
+| Auto labeling | YOLO detection / segmentation / pose / OBB ONNX decoding; runs in background, stoppable |
 | Conversion | Batch YOLO / VOC / COCO conversion preserving layout and data.yaml class names |
 | Video tools | Recursively extract frames from nested video folders at a selected FPS; synthesize COCO / YOLO / Pascal VOC datasets from frame folders |
 | Editing | Continuous drawing, undo/redo, move/resize/rotate, keypoint visibility (COCO 0/1/2) |
@@ -66,7 +66,7 @@ One object per line, depending on the task:
 | OBB | `class x1 y1 x2 y2 x3 y3 x4 y4` (4 corners) | `0 0.1 0.1 0.5 0.1 0.5 0.5 0.1 0.5` |
 
 - Coordinates are normalized 0–1; keypoint visibility `v`: 0 unlabeled, 1 occluded, 2 visible
-- The keypoint count is declared by `kpt_shape: [N, 3]` in data.yaml (editable on the canvas, written back automatically)
+- Pose uses `kpt_shape: [N, 2]` (x/y) or `[N, 3]` (x/y/visibility). Editing and exporting preserve the declared dimensions. Opening a dataset never replaces its schema with the last selected template.
 - Task detection prefers the `task` field in data.yaml, then infers from the row shape
 
 ### Pascal VOC
@@ -190,7 +190,11 @@ Predefine everything about a keypoint schema once, then just pick it while annot
 
 ### Auto labeling (Ctrl+A+L)
 
-Select a YOLO ONNX model in Settings first; official YOLO detection and Pose models are supported (classes and keypoints decoded from model metadata); runs in the background, stoppable, progress in the status bar.
+Select a YOLO ONNX model in Settings first. Detection, segmentation, pose, and OBB have task-specific decoders. Segmentation requires prototype masks; pose reads `kpt_shape` even without named points; OBB uses rotated overlap suppression. Automatic labeling uses letterbox preprocessing. Runs in the background, stoppable, with progress in the status bar.
+
+An already annotated YOLO dataset must match the model task and classes. Existing annotations are not silently reinterpreted as a different task. OBB automatic labeling requires YOLO OBB output; Pascal VOC does not gain private polygon or keypoint fields.
+
+Conversion and synthesis preserve the source YOLO task unless a target task is selected. All YOLO outputs include `images/`, `labels/`, class names, and training paths in `data.yaml`. Disconnected COCO polygons can be connected into a standard YOLO segmentation row using the explicit conversion option. Automatic mask labeling retains all external contours with retraced connecting edges. Rectangle-to-OBB and OBB-to-polygon conversions retain geometry; conversions that would invent keypoints or discard geometry are rejected. See [four-task support and validation](docs/yolo-four-task-support.md).
 
 ## Keyboard Shortcuts
 

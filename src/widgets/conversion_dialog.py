@@ -3,11 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QSettings, Signal
-from PySide6.QtWidgets import QFileDialog, QComboBox, QDialog, QFormLayout, QLineEdit, QPushButton, QHBoxLayout, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFileDialog, QCheckBox, QComboBox, QDialog, QFormLayout, QLineEdit, QPushButton, QHBoxLayout, QVBoxLayout, QWidget
 
 from src.models.annotation import LabelPreset
 from src.services.conversion_service import ConversionOptions, ConversionService
 from src.services.dataset_detector import DatasetDetector
+from src.services.display_names import format_name, task_name
 from .common_dialogs import AppDialog
 from .form_layout import configure_buttons, configure_form, section_card, set_confirm_button, set_content_margins, size_buttons
 
@@ -39,26 +40,36 @@ class ConversionDialog(QDialog):
         super().__init__(parent)
         self.setObjectName("conversionDialog")
         self.setMinimumWidth(470)
-        self.setWindowTitle("数据转换")
         self.presets = list(presets)
         self.options: ConversionOptions | None = None
+        english = getattr(getattr(parent, "settings", None), "language", "zh_CN") == "en_US"
+        self.english = english
+        self._tr = lambda zh, en: en if self.english else zh
+        self.setWindowTitle(self._tr("数据转换", "Dataset Conversion"))
         self.source_path = QLineEdit(); self.output_path = QLineEdit()
-        self.source_format = QComboBox(); self.source_format.addItem("COCO", "coco"); self.source_format.addItem("YOLO", "yolo"); self.source_format.addItem("Pascal VOC", "voc")
-        self.output_format = QComboBox(); self.output_format.addItem("COCO", "coco"); self.output_format.addItem("YOLO", "yolo"); self.output_format.addItem("Pascal VOC", "voc")
+        self.source_format = QComboBox(); self.output_format = QComboBox()
+        for combo in (self.source_format, self.output_format):
+            for value in ("coco", "yolo", "voc"):
+                combo.addItem(format_name(value, "en_US" if english else "zh_CN"), value)
         self.source_task = QComboBox(); self.output_task = QComboBox()
+        self.merge_parts = QCheckBox("Connect disconnected contours (keep all regions)" if english else "连接不连通轮廓（保留所有区域）")
+        self.merge_parts.setVisible(False)
+        self.output_task.currentIndexChanged.connect(
+            lambda: self.merge_parts.setVisible(self.output_task.currentData() == "yolo_segmentation"))
         self.source_format.currentIndexChanged.connect(self._refresh_task_options)
         self.output_format.currentIndexChanged.connect(self._refresh_task_options)
         self._refresh_task_options()
         layout = QVBoxLayout(self); set_content_margins(layout); layout.setSpacing(10)
-        source_card = section_card(layout, "\u6570\u636e\u96c6\u5408")
+        source_card = section_card(layout, self._tr("数据集", "Dataset"))
         source_form = configure_form(QFormLayout()); source_form.setVerticalSpacing(8)
         source_form.addRow("\u76ee\u5f55", self._path_row(self.source_path, False)); source_form.addRow("\u683c\u5f0f", self.source_format); source_form.addRow("\u4efb\u52a1", self.source_task)
         source_card.addLayout(source_form)
-        target_card = section_card(layout, "\u8f6c\u6362\u76ee\u6807")
+        target_card = section_card(layout, self._tr("转换目标", "Conversion Target"))
         target_form = configure_form(QFormLayout()); target_form.setVerticalSpacing(8)
         target_form.addRow("\u76ee\u5f55", self._path_row(self.output_path, True)); target_form.addRow("\u683c\u5f0f", self.output_format); target_form.addRow("\u4efb\u52a1", self.output_task)
         target_card.addLayout(target_form)
-        buttons = configure_buttons(QHBoxLayout()); buttons.addStretch(); self.cancel_button = QPushButton("\u53d6\u6d88"); self.confirm_button = QPushButton("\u786e\u8ba4")
+        target_card.addWidget(self.merge_parts)
+        buttons = configure_buttons(QHBoxLayout()); buttons.addStretch(); self.cancel_button = QPushButton(self._tr("取消", "Cancel")); self.confirm_button = QPushButton(self._tr("确认", "Confirm"))
         self.cancel_button.clicked.connect(self.reject); self.confirm_button.clicked.connect(self.accept)
         buttons.addWidget(self.cancel_button); buttons.addWidget(self.confirm_button)
         size_buttons(self.cancel_button, self.confirm_button)
@@ -91,10 +102,16 @@ class ConversionDialog(QDialog):
                 self.source_task.setCurrentIndex(index)
 
     def _refresh_task_options(self) -> None:
+        english = getattr(self, "english", False)
         def fill(combo: QComboBox, format_name: str) -> None:
             current = combo.currentData()
             options = {
-                "yolo": [("YOLO Detection", "yolo_detection"), ("YOLO Segmentation", "yolo_segmentation"), ("YOLO Pose", "yolo_pose")],
+                "yolo": [
+                    (f"YOLO · {task_name('yolo_detection', 'en_US' if english else 'zh_CN')}", "yolo_detection"),
+                    (f"YOLO · {task_name('yolo_segmentation', 'en_US' if english else 'zh_CN')}", "yolo_segmentation"),
+                    (f"YOLO · {task_name('yolo_pose', 'en_US' if english else 'zh_CN')}", "yolo_pose"),
+                    (f"YOLO · {task_name('yolo_obb', 'en_US' if english else 'zh_CN')}", "yolo_obb"),
+                ],
                 "coco": [("COCO", "coco")],
                 "voc": [("Pascal VOC", "voc")],
             }.get(str(format_name), [])
@@ -103,6 +120,7 @@ class ConversionDialog(QDialog):
             index = combo.findData(current); combo.setCurrentIndex(index if index >= 0 else 0); combo.blockSignals(False)
         fill(self.source_task, self.source_format.currentData())
         fill(self.output_task, self.output_format.currentData())
+        self.merge_parts.setVisible(self.output_task.currentData() == "yolo_segmentation")
 
     def _save_last_conversion(self, source: Path) -> None:
         settings = QSettings("RelinRan", "ModelLabeling")
@@ -114,10 +132,10 @@ class ConversionDialog(QDialog):
 
     def _path_row(self, editor: QLineEdit, output: bool) -> QWidget:
         row = QWidget(); layout = QHBoxLayout(row); layout.setContentsMargins(0, 0, 0, 0); layout.addWidget(editor)
-        browse = QPushButton("\u6d4f\u89c8"); browse.clicked.connect(lambda: self._choose_path(editor, output)); layout.addWidget(browse); return row
+        browse = QPushButton(self._tr("浏览", "Browse")); browse.clicked.connect(lambda: self._choose_path(editor, output)); layout.addWidget(browse); return row
 
     def _choose_path(self, editor: QLineEdit, output: bool) -> None:
-        path = QFileDialog.getExistingDirectory(self, "\u9009\u62e9\u8f93\u51fa\u6587\u4ef6\u5939" if output else "\u9009\u62e9\u6e90\u6587\u4ef6\u5939", editor.text())
+        path = QFileDialog.getExistingDirectory(self, self._tr("选择输出文件夹" if output else "选择源文件夹", "Choose output folder" if output else "Choose source folder"), editor.text())
         if path:
             editor.setText(path)
             if not output and not self._detect_source_format(Path(path)):
@@ -167,12 +185,16 @@ class ConversionDialog(QDialog):
         return True
 
     def accept(self) -> None:
-        source = Path(self.source_path.text())
+        if not self.source_path.text().strip() or not self.output_path.text().strip():
+            AppDialog.information("\u63d0\u793a", "\u8bf7\u9009\u62e9\u6e90\u8def\u5f84\u548c\u8f6c\u8def\u5f84", self)
+            return
+        source = Path(self.source_path.text().strip())
         if not source.exists():
             AppDialog.information("提示", "\u6e90\u8def\u5f84\u4e0d\u5b58\u5728", self)
             return
         if source.is_dir() and any(source.iterdir()) and not self._detect_source_format(source):
             return
         self.options = ConversionOptions(str(self.source_format.currentData()), source, str(self.output_format.currentData()), Path(self.output_path.text()), self.presets, source_task=str(self.source_task.currentData()), output_task=str(self.output_task.currentData()))
+        self.options.merge_polygon_parts = self.merge_parts.isChecked()
         self._save_last_conversion(source)
         super().accept()

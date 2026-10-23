@@ -7,6 +7,8 @@ from PySide6.QtWidgets import QComboBox, QDialog, QFileDialog, QFormLayout, QHBo
 
 from src.models.annotation import ShapeType
 from src.models.project import ProjectSettings
+from src.services.display_names import format_name, task_name
+from src.services.format_capabilities import CAPABILITIES, task_for_format
 from .canvas_view import CanvasView
 from .i18n import LANGUAGES
 from .form_layout import BUTTON_TOP_SPACING, configure_buttons, configure_form, section_card, set_confirm_button, set_content_margins, size_buttons
@@ -18,11 +20,14 @@ class SettingsDialog(QDialog):
 
     def __init__(self, settings: ProjectSettings, parent=None) -> None:
         super().__init__(parent)
-        self.setObjectName("settingsDialog"); self.resize(595, self.sizeHint().height()); self.setMinimumWidth(470); self.setWindowTitle("\u53c2\u6570\u8bbe\u7f6e" if False else "参数设置")
         self.settings = ProjectSettings.from_dict(settings.to_dict())
         self.english = self.settings.language == "en_US"
+        self.setObjectName("settingsDialog"); self.resize(500, 335); self.setMinimumWidth(470); self.setWindowTitle("Application Settings" if self.english else "应用设置")
         self.image_dir = QLineEdit(str(self.settings.image_dir or "")); self.annotation_dir = QLineEdit(str(self.settings.annotation_dir or "")); self.onnx_model = QLineEdit(str(self.settings.onnx_model_path or ""))
-        self.format = QComboBox(); self.format.addItem("YOLO", "yolo"); self.format.addItem("Pascal VOC", "voc"); self.format.addItem("COCO", "coco"); self.format.setCurrentIndex(max(0, self.format.findData(self.settings.annotation_format)))
+        self.format = QComboBox()
+        for value in ("yolo", "voc", "coco"):
+            self.format.addItem(format_name(value, "en_US" if self.english else "zh_CN"), value)
+        self.format.setCurrentIndex(max(0, self.format.findData(self.settings.annotation_format)))
         self.task = QComboBox()
         self.format.currentIndexChanged.connect(self._refresh_task_options)
         self._refresh_task_options()
@@ -45,7 +50,7 @@ class SettingsDialog(QDialog):
         self.input_size_row = QWidget(); self.input_size_layout = QHBoxLayout(self.input_size_row); self.input_size_layout.setContentsMargins(0, 0, 0, 0); self.input_size_layout.setSpacing(6); self.input_size_layout.addWidget(self.input_width, 1); self.input_size_layout.addWidget(QLabel("x")); self.input_size_layout.addWidget(self.input_height, 1)
         self.confidence = NumericStepper(self.settings.confidence_threshold, 0, 1, 0.05, 2)
         self.nms = NumericStepper(self.settings.nms_threshold, 0, 1, 0.05, 2)
-        self.categories = QListWidget(); self.categories.setObjectName("settingsCategories"); self.categories.setFixedWidth(95); self.categories.setFrameShape(QListWidget.Shape.NoFrame); self.categories.setLineWidth(0); self.categories.setMidLineWidth(0); self.categories.addItems(["Dataset", "Display", "Auto Label", "General"] if self.english else ["\u6570\u636e\u96c6\u5408", "\u6807\u6ce8\u663e\u793a", "\u81ea\u52a8\u6807\u6ce8", "\u901a\u7528\u8bbe\u7f6e"])
+        self.categories = QListWidget(); self.categories.setObjectName("settingsCategories"); self.categories.setFixedWidth(95); self.categories.setFrameShape(QListWidget.Shape.NoFrame); self.categories.setLineWidth(0); self.categories.setMidLineWidth(0); self.categories.addItems(["Dataset", "Display", "Auto Label", "General"] if self.english else ["数据集", "标注显示", "自动标注", "通用设置"])
         self.pages = QStackedWidget(); self.pages.addWidget(self._dataset_page()); self.pages.addWidget(self._annotation_page()); self.pages.addWidget(self._auto_page()); self.pages.addWidget(self._general_page())
         self.categories.currentRowChanged.connect(self.pages.setCurrentIndex); self.categories.setCurrentRow(0)
         layout = QVBoxLayout(self); set_content_margins(layout); layout.setSpacing(0); content = QHBoxLayout(); content.setContentsMargins(0, 0, 0, 0); content.setSpacing(20); content.addWidget(self.categories); content.addWidget(self.pages, 1); layout.addLayout(content)
@@ -63,26 +68,26 @@ class SettingsDialog(QDialog):
 
     def _dataset_page(self) -> QWidget: return self._page("Dataset" if self.english else "\u6570\u636e\u96c6", [("Image path" if self.english else "\u56fe\u7247\u8def\u5f84", self._path_row(self.image_dir, self._choose_image_dir)), ("Annotation path" if self.english else "\u6807\u6ce8\u8def\u5f84", self._path_row(self.annotation_dir, self._choose_annotation_dir)), ("Format" if self.english else "\u6807\u6ce8\u683c\u5f0f", self.format), ("Task" if self.english else "\u4efb\u52a1\u683c\u5f0f", self.task)])
     def _annotation_page(self) -> QWidget: return self._page("Display" if self.english else "\u6807\u6ce8\u663e\u793a", [("Annotation method" if self.english else "\u6807\u6ce8\u65b9\u5f0f", self.shape_combo), ("Line width" if self.english else "\u7ebf\u6761\u7c97\u7ec6", self.line_width), ("Text size" if self.english else "\u6587\u5b57\u5927\u5c0f", self.text_size)])
-    def _auto_page(self) -> QWidget: return self._page("Auto Label" if self.english else "\u81ea\u52a8\u6807\u6ce8", [("YOLO model" if self.english else "YOLO模型", self._path_row(self.onnx_model, self._choose_model)), ("Input size" if self.english else "\u8f93\u5165\u5c3a\u5bf8", self.input_size_row), ("Confidence" if self.english else "\u7f6e\u4fe1\u5ea6\u9608\u503c", self.confidence), ("NMS threshold" if self.english else "NMS \u9608\u503c", self.nms), ("Save mode" if self.english else "\u6807\u6ce8\u4fdd\u5b58", self.auto_save)])
-    def _general_page(self) -> QWidget: return self._page("General" if self.english else "\u901a\u7528\u8bbe\u7f6e", [("Application language" if self.english else "\u5e94\u7528\u8bed\u8a00", self.language_combo), ("Startup" if self.english else "\u542f\u52a8", self.reopen_combo)])
+    def _auto_page(self) -> QWidget: return self._page("Auto Label" if self.english else "\u81ea\u52a8\u6807\u6ce8", [("YOLO model" if self.english else "YOLO模型", self._path_row(self.onnx_model, self._choose_model)), ("Input size" if self.english else "\u8f93\u5165\u5c3a\u5bf8", self.input_size_row), ("Confidence" if self.english else "\u7f6e\u4fe1\u5ea6\u9608\u503c", self.confidence), ("NMS threshold" if self.english else "NMS \u9608\u503c", self.nms)])
+    def _general_page(self) -> QWidget: return self._page("General" if self.english else "\u901a\u7528\u8bbe\u7f6e", [("Application language" if self.english else "\u5e94\u7528\u8bed\u8a00", self.language_combo), ("Startup" if self.english else "\u542f\u52a8", self.reopen_combo), ("Save mode" if self.english else "\u6807\u6ce8\u4fdd\u5b58", self.auto_save)])
     def _path_row(self, editor: QLineEdit, handler) -> QWidget:
         row = QWidget(); layout = QHBoxLayout(row); layout.setContentsMargins(0, 0, 0, 0); layout.addWidget(editor); button = QPushButton("Browse" if self.english else "\u6d4f\u89c8"); button.clicked.connect(handler); layout.addWidget(button); return row
     def _choose_image_dir(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "\u9009\u62e9\u56fe\u7247\u6587\u4ef6\u5939", self.image_dir.text()); self.image_dir.setText(path) if path else None
+        path = QFileDialog.getExistingDirectory(self, "Choose image folder" if self.english else "选择图片文件夹", self.image_dir.text()); self.image_dir.setText(path) if path else None
     def _choose_annotation_dir(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "\u9009\u62e9\u6807\u6ce8\u6587\u4ef6\u5939", self.annotation_dir.text()); self.annotation_dir.setText(path) if path else None
+        path = QFileDialog.getExistingDirectory(self, "Choose annotation folder" if self.english else "选择标注文件夹", self.annotation_dir.text()); self.annotation_dir.setText(path) if path else None
     def _choose_model(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "\u9009\u62e9 ONNX \u6a21\u578b", self.onnx_model.text(), "ONNX Model (*.onnx)"); self.onnx_model.setText(path) if path else None
+        path, _ = QFileDialog.getOpenFileName(self, "Choose ONNX model" if self.english else "选择 ONNX 模型", self.onnx_model.text(), "ONNX Model (*.onnx)"); self.onnx_model.setText(path) if path else None
 
     def _refresh_task_options(self) -> None:
         current = self.settings.dataset_task or ""
         format_name = str(self.format.currentData())
         options = {
             "yolo": [
-                ("YOLO Detection" if self.english else "YOLO 检测", "yolo_detection"),
-                ("YOLO Segmentation" if self.english else "YOLO 分割", "yolo_segmentation"),
-                ("YOLO Pose" if self.english else "YOLO 关键点", "yolo_pose"),
-                ("YOLO OBB" if self.english else "YOLO 旋转框", "yolo_obb"),
+                (f"YOLO · {task_name('yolo_detection', 'en_US' if self.english else 'zh_CN')}", "yolo_detection"),
+                (f"YOLO · {task_name('yolo_segmentation', 'en_US' if self.english else 'zh_CN')}", "yolo_segmentation"),
+                (f"YOLO · {task_name('yolo_pose', 'en_US' if self.english else 'zh_CN')}", "yolo_pose"),
+                (f"YOLO · {task_name('yolo_obb', 'en_US' if self.english else 'zh_CN')}", "yolo_obb"),
             ],
             "coco": [("COCO" if self.english else "COCO", "coco")],
             "voc": [("Pascal VOC" if self.english else "Pascal VOC", "voc")],
@@ -101,14 +106,7 @@ class SettingsDialog(QDialog):
         # Methods the current task cannot save are hidden entirely rather
         # than shown disabled: the dropdown must only offer valid choices.
         task = str(self.task.currentData() or "")
-        supported = {
-            "coco": {ShapeType.RECTANGLE, ShapeType.SQUARE, ShapeType.POLYGON, ShapeType.KEYPOINT},
-            "yolo_detection": {ShapeType.RECTANGLE, ShapeType.SQUARE},
-            "yolo_segmentation": {ShapeType.RECTANGLE, ShapeType.SQUARE, ShapeType.POLYGON},
-            "yolo_pose": {ShapeType.KEYPOINT},
-            "yolo_obb": {ShapeType.OBB},
-            "voc": {ShapeType.RECTANGLE, ShapeType.SQUARE},
-        }.get(task, {ShapeType.RECTANGLE})
+        supported = CAPABILITIES.get(task_for_format(str(self.format.currentData()), task), CAPABILITIES[task_for_format("yolo")]).shapes
         current = self.shape_combo.currentData()
         self.shape_combo.blockSignals(True)
         self.shape_combo.clear()

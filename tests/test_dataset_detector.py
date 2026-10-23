@@ -178,9 +178,32 @@ def test_cancelled_coco_conversion_does_not_publish_partial_json(tmp_path):
             overwrite=True,
         ),
         progress_callback=lambda current, total: progress.append(current),
-        cancel_callback=lambda: len(progress) >= 1,
+        cancel_callback=lambda: any(current >= 1 for current in progress),
     )
 
     assert report.succeeded == 1
+    assert progress == [0, 1]
     assert not (output / "annotations" / "annotations.json").exists()
-    assert (output / "annotations" / ".model_labeling.sqlite3").exists()
+    assert not (output / "annotations" / ".model_labeling.sqlite3").exists()
+def test_explicit_yolo_task_does_not_scan_label_tree(tmp_path, monkeypatch):
+    (tmp_path / "images").mkdir()
+    (tmp_path / "labels").mkdir()
+    (tmp_path / "data.yaml").write_text("task: segment\nnames: [person]\n", encoding="utf-8")
+
+    def no_scan(*args, **kwargs):
+        raise AssertionError("explicit task should bypass annotation traversal")
+
+    monkeypatch.setattr(Path, "rglob", no_scan)
+    assert DatasetDetector.detect(tmp_path).task_name == "yolo_segmentation"
+
+
+def test_yolo_task_inference_reads_only_bounded_sample(tmp_path):
+    label = tmp_path / "sample.txt"
+    label.write_text("0 0.5 0.5 0.2 0.2\n", encoding="utf-8")
+
+    def paths():
+        for _ in range(20):
+            yield label
+        raise AssertionError("task inference enumerated more than 20 files")
+
+    assert DatasetDetector._yolo_task(tmp_path, paths()) == "yolo_detection"

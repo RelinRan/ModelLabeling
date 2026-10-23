@@ -32,6 +32,7 @@ from PIL import Image
 from PySide6.QtCore import QSettings
 
 from src.widgets import conversion_dialog, main_window, preset_panel, video_tools_dialogs
+from src.services import dataset_index, keypoint_group_store, label_group_store
 
 # Every widget module that resolves QSettings at call time. Patching the
 # module attribute is what actually redirects them, because they bind the name
@@ -83,7 +84,7 @@ def _isolate_application_settings(tmp_path_factory):
 
 @pytest.fixture(autouse=True)
 def _module_settings_to_memory(tmp_path, monkeypatch):
-    """Route each widget module's QSettings at a per-test INI file."""
+    """Keep widget settings and application databases inside per-test storage."""
     ini = tmp_path / "app-settings.ini"
 
     def factory(*_args, **_kwargs):
@@ -92,6 +93,17 @@ def _module_settings_to_memory(tmp_path, monkeypatch):
     for module in _SETTINGS_MODULES:
         if hasattr(module, "QSettings"):
             monkeypatch.setattr(module, "QSettings", factory)
+    monkeypatch.setattr(
+        label_group_store,
+        "DEFAULT_LABEL_GROUP_DB",
+        tmp_path / "app-data" / "label_groups.sqlite3",
+    )
+    monkeypatch.setattr(
+        keypoint_group_store,
+        "DEFAULT_KEYPOINT_GROUP_DB",
+        tmp_path / "app-data" / "keypoint_groups.sqlite3",
+    )
+    monkeypatch.setattr(dataset_index, "DEFAULT_INDEX_CACHE", tmp_path / "index")
     return ini
 
 

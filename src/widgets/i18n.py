@@ -34,7 +34,7 @@ _TEXT = {
         "default_group": "默认标签",
     },
     "en_US": {
-        "settings": "Annotation Settings",
+        "settings": "Application Settings",
         "language": "App language",
         "label_settings": "Label Settings",
         "operations": "Annotation Operations",

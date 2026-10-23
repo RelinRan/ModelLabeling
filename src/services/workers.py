@@ -6,6 +6,7 @@ import re
 import xml.etree.ElementTree as ET
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+from time import monotonic
 
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QColor
@@ -45,6 +46,7 @@ class DatasetStatisticsWorker(QObject):
                 total = len(self.records)
                 pages = (self.records[index:index + 500] for index in range(0, total, 500))
             self.progress.emit(0, total, self._snapshot(total, 0, 0, Counter()))
+            last_progress = monotonic()
             index = service.build_index(self.annotation_dir, self.settings.annotation_format, cancel_callback=lambda: self.cancelled) if self.settings.annotation_format == "coco" else None
             labeled = total_labels = 0
             labels: Counter[str] = Counter()
@@ -73,7 +75,10 @@ class DatasetStatisticsWorker(QObject):
                             if values:
                                 labeled += 1; total_labels += len(values); labels.update(values)
                             processed += 1
-                            self.progress.emit(processed, total, self._snapshot(total, labeled, total_labels, labels))
+                            now = monotonic()
+                            if processed == total or now - last_progress >= 0.05:
+                                self.progress.emit(processed, total, self._snapshot(total, labeled, total_labels, labels))
+                                last_progress = now
             self.finished.emit(self._snapshot(total, labeled, total_labels, labels))
         except Exception as exc:
             self.failed.emit(str(exc))
@@ -290,16 +295,56 @@ class AutoLabelWorker(QObject):
                     raise ValueError(
                         "ONNX model classes do not match the opened YOLO dataset classes"
                     )
+            if self.settings.annotation_format == "yolo" and self.settings.annotation_dir:
+                target_task = {"detect": "yolo_detection", "pose": "yolo_pose", "segment": "yolo_segmentation",
+                               "segmentation": "yolo_segmentation", "obb": "yolo_obb"}.get(detector.task)
+                if target_task is None:
+                    raise ValueError(f"Unsupported ONNX task: {detector.task}")
+                if target_task != (self.settings.dataset_task or "yolo_detection"):
+                    for path in self.settings.annotation_dir.rglob("*.txt"):
+                        if path.name != "classes.txt" and path.read_text(encoding="utf-8").strip():
+                            raise ValueError("ONNX task differs from existing annotations; use a matching or empty dataset")
+                self.settings.dataset_task = target_task
             if detector.task == "pose" and self.settings.annotation_format == "yolo":
                 self.settings.dataset_task = "yolo_pose"
             elif detector.task in {"segment", "segmentation"} and self.settings.annotation_format == "yolo":
                 self.settings.dataset_task = "yolo_segmentation"
+            elif detector.task == "obb" and self.settings.annotation_format == "yolo":
+                self.settings.dataset_task = "yolo_obb"
+            if detector.task == "obb" and self.settings.annotation_format != "yolo":
+                raise ValueError("Standard OBB annotations require a YOLO OBB dataset")
             if detector.task in {"pose", "segment", "segmentation"} and self.settings.annotation_format == "voc":
                 raise ValueError(
                     "Pascal VOC does not support ONNX pose or segmentation annotations"
                 )
             model_presets = self._model_presets(detector.class_names)
             self.settings.label_presets = model_presets
+            if self.settings.annotation_format == "yolo" and self.settings.annotation_dir:
+                from .conversion_service import ConversionService
+                from .yolo_metadata import find_yolo_yaml, load_yolo_metadata, yolo_keypoint_shape, yolo_keypoint_names
+                yaml_path = find_yolo_yaml(self.settings.annotation_dir)
+                root = yaml_path.parent if yaml_path else self.settings.annotation_dir.parent
+                extra = {}
+                if detector.task == "pose":
+                    shape = getattr(detector, "keypoint_shape", None) or (
+                        len(detector.keypoint_names), 3)
+                    if not shape[0]:
+                        raise ValueError("YOLO Pose model must declare kpt_shape")
+                    existing_shape = yolo_keypoint_shape(root)
+                    if existing_shape and tuple(shape) != existing_shape:
+                        raise ValueError("ONNX kpt_shape does not match dataset kpt_shape")
+                    existing_names = yolo_keypoint_names(root)
+                    if existing_names:
+                        if (getattr(detector, "keypoint_names_declared", False)
+                                and list(detector.keypoint_names) != existing_names):
+                            raise ValueError("ONNX keypoint names do not match dataset kpt_names")
+                        detector.keypoint_names = existing_names
+                    self.settings.keypoint_dimensions = shape[1]
+                    extra = {"kpt_shape": list(shape), "kpt_names": list(detector.keypoint_names)}
+                    metadata = load_yolo_metadata(root)
+                    if "flip_idx" in metadata:
+                        extra["flip_idx"] = metadata["flip_idx"]
+                ConversionService._write_yolo_yaml(root, model_presets, self.settings.dataset_task or "yolo_detection", extra, preserve_paths=True)
             self.modelReady.emit(
                 detector.task, list(detector.keypoint_names), list(detector.class_names),
             )
@@ -313,8 +358,14 @@ class AutoLabelWorker(QObject):
                 with Image.open(record.path) as image:
                     annotations = detector.predict(image, model_presets, size,
                                                     self.settings.confidence_threshold,
-                                                    self.settings.nms_threshold)
+                                                    self.settings.nms_threshold, letterbox=True)
                 if self.settings.annotation_dir is not None:
+                    if self.settings.dataset_task == "yolo_segmentation":
+                        from .segmentation_geometry import bridge_contours
+                        for annotation in annotations:
+                            if len(annotation.polygon_parts) > 1:
+                                annotation.points = bridge_contours(annotation.polygon_parts)
+                                annotation.polygon_parts = []
                     target_dir = self.settings.annotation_dir
                     if self.settings.annotation_format != "coco" and self.settings.image_dir is not None:
                         try:
@@ -409,14 +460,26 @@ class DatasetAnnotationSaveWorker(QObject):
             relative_parent = self.image_path.parent.relative_to(self.image_dir)
             target_dir = self.annotation_dir if self.settings.annotation_format == "coco" else self.annotation_dir / relative_parent
             result = AnnotationService().save(self.image_path, self.annotations, target_dir, self.settings)
-            if self.settings.annotation_format == "yolo":
+            if result.ok and self.settings.annotation_format == "yolo":
                 # classes.txt is the authoritative class-id mapping for YOLO
                 # label files; bootstrap it for datasets that have none yet.
-                classes_path = self.image_dir.parent / "classes.txt"
+                from .yolo_metadata import find_yolo_yaml, load_yolo_metadata
+                from .conversion_service import ConversionService
+                yaml_path = find_yolo_yaml(self.annotation_dir)
+                root = yaml_path.parent if yaml_path else self.image_dir.parent
+                classes_path = root / "classes.txt"
+                by_id = {preset.class_id: preset.name for preset in self.settings.label_presets}
                 AnnotationService._atomic_write_text(
                     classes_path,
-                    "\n".join(preset.name for preset in self.settings.label_presets) + "\n",
+                    "\n".join(by_id.get(i, f"class_{i}") for i in range(max(by_id, default=-1) + 1)) + "\n",
                 )
+                metadata = load_yolo_metadata(root)
+                extra = {key: metadata[key] for key in ("kpt_shape", "kpt_names", "flip_idx") if key in metadata}
+                if self.settings.dataset_task == "yolo_pose" and "kpt_shape" not in extra and self.annotations:
+                    extra["kpt_shape"] = [len(self.annotations[0].keypoints), self.settings.keypoint_dimensions]
+                    extra["kpt_names"] = [point.name for point in self.annotations[0].keypoints]
+                ConversionService._write_yolo_yaml(root, self.settings.label_presets,
+                                                   self.settings.dataset_task or "yolo_detection", extra, preserve_paths=True)
             self.finished.emit("" if result.ok else (result.error or "保存标注失败"))
         except Exception as exc:
             self.finished.emit(str(exc))

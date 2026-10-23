@@ -78,7 +78,7 @@ def _segments_cross(p1, p2, p3, p4) -> bool:
         return (value > 1e-9) - (value < -1e-9)
     o1, o2 = orient(p1, p2, p3), orient(p1, p2, p4)
     o3, o4 = orient(p3, p4, p1), orient(p3, p4, p2)
-    if o1 != o2 and o3 != o4:
+    if o1 * o2 < 0 and o3 * o4 < 0:
         return True
     return False
 class UnsupportedAnnotationError(ValueError):
@@ -115,6 +115,7 @@ def validate_annotations(
     annotation_format: str,
     task: str | DatasetTask | None = None,
 ) -> FormatCapabilities:
+    annotations = tuple(annotations)
     capabilities = CAPABILITIES[task_for_format(annotation_format, task)]
     unsupported = sorted({
         annotation.shape_type.value

@@ -19,6 +19,7 @@ from src.utils.pixels import channel_count
 from .coco_store import CocoAnnotationStore
 from .format_adapters import adapter_for
 from .yolo_metadata import yolo_keypoint_names, yolo_keypoint_shape
+from .yolo_rows import parse_yolo_row
 
 
 @dataclass
@@ -78,15 +79,18 @@ class AnnotationService:
                 return index
             document = self._load_coco_document(annotation_dir)
             index.coco_images = {
-                str(item.get("file_name", "")): item
+                str(item.get("file_name", "")).replace("\\", "/"): item
                 for item in document.get("images", [])
                 if item.get("file_name")
             }
-            index.coco_images.update({
-                Path(str(item.get("file_name", ""))).name: item
-                for item in document.get("images", [])
-                if item.get("file_name")
-            })
+            basename_groups: dict[str, list[dict]] = {}
+            for item in document.get("images", []):
+                name = str(item.get("file_name", "")).replace("\\", "/")
+                if name:
+                    basename_groups.setdefault(Path(name).name, []).append(item)
+            for basename, items in basename_groups.items():
+                if len(items) == 1:
+                    index.coco_images.setdefault(basename, items[0])
             for item in document.get("annotations", []):
                 index.coco_annotations.setdefault(item.get("image_id"), []).append(item)
             index.coco_categories = {
@@ -192,7 +196,14 @@ class AnnotationService:
         if adapter.format_name == "voc":
             self._save_voc(image_path, annotations, directory, settings.label_presets)
         elif adapter.format_name == "coco":
-            self._save_coco(image_path, annotations, directory, settings.label_presets)
+            file_name = image_path.name
+            if settings.image_dir is not None:
+                try:
+                    file_name = image_path.resolve().relative_to(Path(settings.image_dir).resolve()).as_posix()
+                except ValueError:
+                    pass
+            self._ensure_coco_store(directory)
+            self._save_coco(image_path, annotations, directory, settings.label_presets, file_name)
         elif adapter.task.value == "yolo_pose":
             self._save_yolo_pose(image_path, annotations, directory, settings.label_presets, settings)
         elif adapter.task.value == "yolo_segmentation":
@@ -237,15 +248,13 @@ class AnnotationService:
         return candidates[0] if candidates else None
 
     def _load_coco_document(self, directory: Path) -> dict:
+        return self._ensure_coco_store(directory).read_document()
+
+    def _ensure_coco_store(self, directory: Path) -> CocoAnnotationStore:
         store = CocoAnnotationStore(directory)
-        if store.is_initialized():
-            return store.read_document()
         path = self._coco_json_path(directory)
-        if path is None:
-            return {"images": [], "annotations": [], "categories": []}
-        document = json.loads(path.read_text(encoding="utf-8"))
-        store.replace_document(document)
-        return document
+        store.synchronize(path)
+        return store
 
     def _load_coco(
         self,
@@ -262,7 +271,7 @@ class AnnotationService:
             except ValueError:
                 pass
         if index is None:
-            document = self._load_coco_document(directory)
+            document = self._ensure_coco_store(directory).read_image_document(relative_name)
             image_record = next(
                 (item for item in document.get("images", [])
                  if str(item.get("file_name", "")).replace("\\", "/") == relative_name),
@@ -411,7 +420,11 @@ class AnnotationService:
         if not store.is_initialized():
             return None
         service = AnnotationService()
-        return store.export_json(service._coco_json_path(directory))
+        path = service._coco_json_path(directory)
+        store.synchronize(path)
+        if path is not None and not store.is_dirty():
+            return path
+        return store.export_json(path)
 
 
     def save_coco_batch(
@@ -475,13 +488,9 @@ class AnnotationService:
                 document["annotations"].append(item)
                 next_annotation_id += 1
         directory.mkdir(parents=True, exist_ok=True)
-        store = CocoAnnotationStore(directory)
+        store = self._ensure_coco_store(directory)
         store.replace_document(document)
-        path = directory / "annotations.json"
-        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory, prefix=".annotations-", suffix=".tmp", delete=False) as temporary:
-            temporary.write(json.dumps(document, ensure_ascii=False, indent=2))
-            temporary_path = Path(temporary.name)
-        os.replace(temporary_path, path)
+        store.export_json(directory / "annotations.json")
 
     @staticmethod
     def _resolve_annotation_file(
@@ -585,6 +594,7 @@ class AnnotationService:
             parts = raw.split()
             if len(parts) != 5:
                 raise ValueError(f"{txt_path.name}:{line_number}: expected 5 values")
+            parse_yolo_row(raw, "yolo_detection")
             class_id = int(parts[0])
             preset = by_id.get(class_id)
             if preset is None:
@@ -616,18 +626,19 @@ class AnnotationService:
             width, height = image_size
         _, by_id = self._preset_maps(presets)
         expected_keypoints = self._yolo_pose_keypoint_count(directory)
+        shape = yolo_keypoint_shape(directory)
+        dimensions = shape[1] if shape else 3
         annotations: list[Annotation] = []
         for line_number, raw in enumerate(txt_path.read_text(encoding="utf-8").splitlines(), start=1):
             parts = raw.split()
             if not parts:
                 continue
-            if (len(parts) - 5) % 3 != 0 or len(parts) < 8:
-                raise ValueError(f"{txt_path.name}:{line_number}: invalid YOLO Pose keypoint row")
-            row_keypoints = (len(parts) - 5) // 3
+            row_keypoints = (len(parts) - 5) // dimensions
             if expected_keypoints is not None and row_keypoints != expected_keypoints:
                 raise ValueError(
                     f"{txt_path.name}:{line_number}: expected {expected_keypoints} keypoints, got {row_keypoints}"
                 )
+            parse_yolo_row(raw, "yolo_pose", shape)
             class_id = int(parts[0])
             preset = by_id.get(class_id)
             if preset is None:
@@ -646,8 +657,9 @@ class AnnotationService:
                     f"but row has {row_keypoints} keypoints"
                 )
             keypoints = []
-            for index in range(4, len(values), 3):
-                x, y, visibility = values[index:index + 3]
+            for index in range(4, len(values), dimensions):
+                x, y = values[index:index + 2]
+                visibility = values[index + 2] if dimensions == 3 else 2
                 if not 0.0 <= x <= 1.0 or not 0.0 <= y <= 1.0:
                     raise ValueError(f"{txt_path.name}:{line_number}: normalized keypoint out of range")
                 if visibility not in (0.0, 1.0, 2.0):
@@ -671,8 +683,6 @@ class AnnotationService:
         if shape is None:
             return None
         count, dimensions = shape
-        if dimensions != 3:
-            raise ValueError("YOLO Pose kpt_shape must use [count, 3]")
         return count
 
     def _load_yolo_segmentation(self, image_path: Path, directory: Path, presets: list[LabelPreset], image_size: tuple[int, int] | None = None, index: DatasetAnnotationIndex | None = None) -> list[Annotation]:
@@ -687,6 +697,9 @@ class AnnotationService:
         _, by_id = self._preset_maps(presets)
         annotations: list[Annotation] = []
         for line_number, raw in enumerate(txt_path.read_text(encoding="utf-8").splitlines(), start=1):
+            if not raw.strip():
+                continue
+            parse_yolo_row(raw, "yolo_segmentation")
             parts = raw.split()
             if len(parts) < 7 or len(parts[1:]) % 2:
                 raise ValueError(f"{txt_path.name}:{line_number}: invalid YOLO Segmentation row")
@@ -713,6 +726,9 @@ class AnnotationService:
         _, by_id = self._preset_maps(presets)
         annotations: list[Annotation] = []
         for line_number, raw in enumerate(txt_path.read_text(encoding="utf-8").splitlines(), start=1):
+            if not raw.strip():
+                continue
+            parse_yolo_row(raw, "yolo_obb")
             parts = raw.split()
             if len(parts) != 9:
                 raise ValueError(f"{txt_path.name}:{line_number}: expected 9 values for a YOLO OBB row")
@@ -744,10 +760,7 @@ class AnnotationService:
                 for coordinate in (point.x() / width, point.y() / height)
             )
             lines.append(" ".join(values))
-        self._atomic_write_text(
-            directory / f"{image_path.stem}.txt",
-            "\n".join(lines) + ("\n" if lines else ""),
-        )
+        self._write_yolo_lines(image_path, lines, directory, "yolo_obb")
 
     def _save_yolo(
         self,
@@ -769,15 +782,14 @@ class AnnotationService:
                 f"{by_name[annotation.label]} {center_x:.6f} {center_y:.6f} "
                 f"{box_width:.6f} {box_height:.6f}"
             )
-        self._atomic_write_text(
-            directory / f"{image_path.stem}.txt",
-            "\n".join(lines) + ("\n" if lines else ""),
-        )
+        self._write_yolo_lines(image_path, lines, directory, "yolo_detection")
 
     def _save_yolo_pose(self, image_path: Path, annotations: list[Annotation], directory: Path, presets: list[LabelPreset], settings: ProjectSettings) -> None:
         with Image.open(image_path) as image:
             width, height = image.size
         by_name, _ = self._preset_maps(presets)
+        shape = yolo_keypoint_shape(directory)
+        dimensions = shape[1] if shape else settings.keypoint_dimensions
         lines: list[str] = []
         for annotation in annotations:
             if annotation.label not in by_name:
@@ -788,17 +800,23 @@ class AnnotationService:
                 raise ValueError("YOLO Pose requires an outer bounding box")
             rect = rect_to_yolo(QRectF(annotation.points[0], annotation.points[-1]).normalized(), width, height)
             values = [str(by_name[annotation.label]), *(f"{value:.6f}" for value in rect)]
+            if shape and len(annotation.keypoints) != shape[0]:
+                raise ValueError("keypoint count does not match dataset kpt_shape")
+            expected_names = yolo_keypoint_names(directory, by_name[annotation.label])
+            if expected_names and [point.name for point in annotation.keypoints] != expected_names:
+                raise ValueError("keypoint names do not match dataset kpt_names")
             for keypoint in annotation.keypoints:
+                if dimensions == 2 and keypoint.visibility != 2:
+                    raise ValueError("2D YOLO Pose cannot encode hidden keypoints; use kpt_shape [N, 3]")
                 values.extend((
                     f"{keypoint.point.x() / width:.6f}",
                     f"{keypoint.point.y() / height:.6f}",
-                    str(keypoint.visibility),
                 ))
+                if dimensions == 3:
+                    values.append(str(keypoint.visibility))
             lines.append(" ".join(values))
-        self._atomic_write_text(
-            directory / f"{image_path.stem}.txt",
-            "\n".join(lines) + ("\n" if lines else ""),
-        )
+        output_shape = shape or ((len(annotations[0].keypoints), dimensions) if annotations else None)
+        self._write_yolo_lines(image_path, lines, directory, "yolo_pose", output_shape)
 
     def _save_yolo_segmentation(self, image_path: Path, annotations: list[Annotation], directory: Path, presets: list[LabelPreset]) -> None:
         with Image.open(image_path) as image:
@@ -820,7 +838,10 @@ class AnnotationService:
             values = [str(by_name[annotation.label])]
             values.extend(f"{coordinate:.6f}" for point in points for coordinate in (point.x() / width, point.y() / height))
             lines.append(" ".join(values))
-        self._atomic_write_text(
-            directory / f"{image_path.stem}.txt",
-            "\n".join(lines) + ("\n" if lines else ""),
-        )
+        self._write_yolo_lines(image_path, lines, directory, "yolo_segmentation")
+
+    def _write_yolo_lines(self, image_path, lines, directory, task, shape=None):
+        for line in lines:
+            parse_yolo_row(line, task, shape)
+        self._atomic_write_text(directory / f"{image_path.stem}.txt",
+                                "\n".join(lines) + ("\n" if lines else ""))

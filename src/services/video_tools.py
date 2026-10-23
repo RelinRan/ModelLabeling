@@ -67,7 +67,7 @@ def extract_video_frames(source_dir: Path, output_dir: Path, target_fps: int = 1
             progress_callback(video_index, total)
     return len(videos), saved
 
-def synthesize_dataset(source_dir: Path, output_dir: Path, format_name: str, presets: list[LabelPreset], progress_callback=None) -> SynthesisReport:
+def synthesize_dataset(source_dir: Path, output_dir: Path, format_name: str, presets: list[LabelPreset], progress_callback=None, output_task: str | None = None) -> SynthesisReport:
     source_dir, output_dir = Path(source_dir), Path(output_dir)
     if not source_dir.is_dir():
         raise ValueError(f"\u89c6\u9891\u5e27\u76ee\u5f55\u4e0d\u5b58\u5728\uff1a{source_dir}")
@@ -75,15 +75,17 @@ def synthesize_dataset(source_dir: Path, output_dir: Path, format_name: str, pre
         raise ValueError("\u5408\u6210\u76ee\u6807\u4e0d\u80fd\u4e0e\u6e90\u76ee\u5f55\u76f8\u540c\u6216\u4f4d\u4e8e\u6e90\u76ee\u5f55\u5185\u90e8\u3002")
     plain_image_source = True
     source_format = "yolo"
+    source_task = None
     try:
         detected = DatasetDetector.detect(source_dir, allow_plain_images=False)
         if detected.root.resolve() == source_dir.resolve() and detected.annotation_dir.is_dir():
             source_format = detected.format_name
+            source_task = detected.task_name
             plain_image_source = False
     except ValueError:
         pass  # plain extracted frames have no annotations
     if output_dir.exists() and any(output_dir.iterdir()):
         raise ValueError("\u5408\u6210\u76ee\u6807\u76ee\u5f55\u5fc5\u987b\u4e3a\u7a7a\uff0c\u4ee5\u907f\u514d\u8986\u76d6\u5df2\u6709\u6570\u636e\u3002")
     output_dir.mkdir(parents=True, exist_ok=True)
-    options = ConversionOptions(source_format, source_dir, format_name, output_dir, list(presets), overwrite=False, force_structured_output=True, plain_image_source=plain_image_source, flatten_output=True)
+    options = ConversionOptions(source_format, source_dir, format_name, output_dir, list(presets), overwrite=False, source_task=source_task, output_task=output_task, force_structured_output=True, plain_image_source=plain_image_source, flatten_output=True)
     return ConversionService().convert(options, progress_callback=progress_callback)

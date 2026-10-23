@@ -19,17 +19,13 @@ from pathlib import Path
 from src.models.annotation import LabelPreset
 
 from ..yolo_metadata import find_yolo_yaml, load_yolo_metadata, yolo_class_names
+from ..yolo_metadata import yolo_keypoint_shape
+from ..yolo_rows import parse_yolo_row, YoloRowError
 from .common_rules import ImageProbe, box_iou
 from .report import Issue, issue
 
 #: Files that live beside the labels but are not annotations.
 _NON_ANNOTATION_NAMES = {"classes.txt", "train.txt", "val.txt", "test.txt"}
-
-_TASK_ARITY = {
-    "yolo_detection": 5,
-    "yolo_obb": 9,
-}
-
 
 def validate_yolo(
     probes: list[ImageProbe],
@@ -40,10 +36,11 @@ def validate_yolo(
     near_duplicate_iou: float = 0.95,
 ) -> list[Issue]:
     classes, issues = _resolve_classes(detected, presets)
+    shape = yolo_keypoint_shape(detected.root) if detected.task_name == "yolo_pose" else None
     used: set[int] = set()
     for probe in probes:
         issues.extend(_validate_one(
-            probe, detected, classes, used, min_box_size, near_duplicate_iou,
+            probe, detected, classes, used, min_box_size, near_duplicate_iou, shape,
         ))
     issues.extend(_unused_classes(classes, used, detected.annotation_dir))
     issues.extend(_annotation_directory(probes, detected, classes))
@@ -107,6 +104,7 @@ def _validate_one(
     used: set[int],
     min_box_size: int,
     near_duplicate_iou: float,
+    shape=None,
 ) -> list[Issue]:
     issues: list[Issue] = []
     txt_path = probe.annotation_path(detected.annotation_dir, ".txt")
@@ -120,14 +118,14 @@ def _validate_one(
     except OSError as exc:
         return [issue("yolo.annotation.unreadable", probe.path, error=str(exc))]
 
-    rows: list[tuple[int, tuple[float, float, float, float]]] = []
+    rows: list[tuple] = []
     rows_with_line: list[tuple[int, int, tuple[float, float, float, float]]] = []
     for line_number, raw in enumerate(text.splitlines(), start=1):
         if not raw.strip():
             continue
         issues.extend(_validate_row(
             raw, line_number, probe, detected, classes, used,
-            min_box_size, rows, rows_with_line,
+            min_box_size, rows, rows_with_line, shape,
         ))
 
     if not rows and not issues:
@@ -137,88 +135,42 @@ def _validate_one(
 
 
 def _validate_row(raw, line_number, probe, detected, classes, used,
-                  min_box_size, rows, rows_with_line) -> list[Issue]:
-    parts = raw.split()
+                  min_box_size, rows, rows_with_line, shape=None) -> list[Issue]:
     task = detected.task_name or "yolo_detection"
-    expected = _TASK_ARITY.get(task)
-
-    if expected is not None and len(parts) != expected:
-        return [issue(
-            "yolo.row.bad_arity", probe.path,
-            line=line_number, count=len(parts), expected=expected,
-        )]
-    if expected is None and not _matches_task_shape(len(parts), task):
-        return [issue(
-            "yolo.row.bad_arity", probe.path,
-            line=line_number, count=len(parts), expected=_describe_shape(task),
-        )]
-    if len(parts) < 5:
-        return [issue(
-            "yolo.row.bad_arity", probe.path,
-            line=line_number, count=len(parts), expected=5,
-        )]
-
     try:
-        class_id = int(parts[0])
-    except ValueError:
-        return [issue("yolo.row.bad_number", probe.path, line=line_number, value=parts[0])]
-
-    issues: list[Issue] = []
-    if class_id < 0 or (classes and class_id >= len(classes)):
-        issues.append(issue(
-            "yolo.row.class_unknown", probe.path,
-            line=line_number, class_id=class_id, total=len(classes),
-        ))
-    used.add(class_id)
-
-    values: list[float] = []
-    for raw_value in parts[1:]:
-        try:
-            values.append(float(raw_value))
-        except ValueError:
-            issues.append(issue(
-                "yolo.row.bad_number", probe.path, line=line_number, value=raw_value,
-            ))
-            return issues
-    if any(value < -_EPSILON or value > 1 + _EPSILON for value in values):
-        issues.append(issue("yolo.row.out_of_range", probe.path, line=line_number))
-        return issues
-
-    box = tuple(values[:4])  # centre_x, centre_y, width, height
-    if box[2] <= 0 or box[3] <= 0:
-        issues.append(issue(
-            "yolo.row.degenerate", probe.path,
-            line=line_number, width=f"{box[2]:.6f}", height=f"{box[3]:.6f}",
-        ))
-        return issues
-
+        row = parse_yolo_row(raw, task, shape)
+    except YoloRowError as exc:
+        return [issue(f"yolo.row.{exc.kind}", probe.path, line=line_number,
+                      count=len(raw.split()), expected=_describe_shape(task), value=str(exc),
+                      width="0", height="0")]
+    issues = []
+    if row.class_id < 0 or (classes and row.class_id >= len(classes)):
+        issues.append(issue("yolo.row.class_unknown", probe.path, line=line_number,
+                            class_id=row.class_id, total=len(classes)))
+    used.add(row.class_id)
     if probe.ok:
-        pixel_width = box[2] * probe.width
-        pixel_height = box[3] * probe.height
-        if min(pixel_width, pixel_height) < min_box_size:
-            issues.append(issue(
-                "yolo.row.small", probe.path, line=line_number,
-                width=f"{pixel_width:.1f}", height=f"{pixel_height:.1f}",
-                threshold=min_box_size,
-            ))
-        rows.append((class_id, _pixel_box(box, probe)))
-        rows_with_line.append((line_number, class_id, _pixel_box(box, probe)))
+        width, height = row.box[2] * probe.width, row.box[3] * probe.height
+        if min(width, height) < min_box_size:
+            issues.append(issue("yolo.row.small", probe.path, line=line_number,
+                                width=f"{width:.1f}", height=f"{height:.1f}", threshold=min_box_size))
+    # Pose and polygon instances can share an outer box without being duplicates.
+    # Compare complete rows for these tasks, never their enclosing rectangles.
+    if task != "yolo_detection":
+        key = (row.class_id, row.values)
+        previous = [number for number, entry in rows if entry == key]
+        if previous:
+            issues.append(issue("yolo.row.duplicate", probe.path, count=2,
+                                class_id=row.class_id, lines=[previous[0], line_number]))
+        rows.append((line_number, key))
+    elif probe.ok:
+        rows.append((row.class_id, _pixel_box(row.box, probe)))
+        rows_with_line.append((line_number, row.class_id, _pixel_box(row.box, probe)))
     return issues
 
 
-_EPSILON = 1e-6
-
-
-def _matches_task_shape(count: int, task: str) -> bool:
-    if task == "yolo_pose":
-        return count >= 8 and (count - 5) % 3 == 0
-    if task == "yolo_segmentation":
-        return count >= 7 and (count - 5) % 2 == 0
-    return count >= 5
-
-
 def _describe_shape(task: str) -> str:
-    return {"yolo_pose": "5+3k", "yolo_segmentation": "5+2k"}.get(task, ">=5")
+    return {"yolo_pose": "5+Nk", "yolo_segmentation": "1+2k (k>=3)",
+            "yolo_obb": "9", "yolo_detection": "5"}.get(task, ">=5")
 
 
 def _pixel_box(box, probe: ImageProbe) -> tuple[float, float, float, float]:

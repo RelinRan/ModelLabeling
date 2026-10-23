@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from itertools import islice
 from pathlib import Path
+from typing import Iterable
 
 from .yolo_metadata import load_yolo_metadata
 
@@ -125,15 +127,16 @@ class DatasetDetector:
             # dataset may not have a single annotation or marker file yet.
             if not image_dir.is_dir() or not annotation_dir.is_dir():
                 continue
-            label_files = [
-                path for path in annotation_dir.rglob("*.txt")
-                if path.name.lower() not in {"classes.txt", "train.txt", "val.txt", "test.txt"}
-            ]
-            return DetectedDataset("yolo", root, cls._shared_yolo_image_dir(root, image_dir), cls._shared_yolo_label_dir(root, annotation_dir), cls._yolo_task(root, label_files))
+            def label_files():
+                for path in annotation_dir.rglob("*.txt"):
+                    if path.name.lower() not in {"classes.txt", "train.txt", "val.txt", "test.txt"}:
+                        yield path
+
+            return DetectedDataset("yolo", root, cls._shared_yolo_image_dir(root, image_dir), cls._shared_yolo_label_dir(root, annotation_dir), cls._yolo_task(root, label_files()))
         return None
 
     @staticmethod
-    def _yolo_task(root: Path, label_files: list[Path]) -> str:
+    def _yolo_task(root: Path, label_files: Iterable[Path]) -> str:
         metadata = load_yolo_metadata(root)
         task = str(metadata.get("task", "")).strip().lower()
         if metadata.get("kpt_shape") is not None or task == "pose":
@@ -142,12 +145,13 @@ class DatasetDetector:
             return "yolo_segmentation"
         if task in {"obb", "obb detection", "oriented", "rotated", "rotate"}:
             return "yolo_obb"
+        if task in {"detect", "detection"}:
+            return "yolo_detection"
         lengths: list[int] = []
-        for path in label_files[:20]:
+        for path in islice(label_files, 20):
             try:
-                lengths.extend(
-                    len(line.split()) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
-                )
+                with path.open(encoding="utf-8") as stream:
+                    lengths.extend(len(line.split()) for line in islice(stream, 100) if line.strip())
             except OSError:
                 continue
         if lengths and all(length == 9 for length in lengths):

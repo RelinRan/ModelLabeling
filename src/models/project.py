@@ -101,6 +101,7 @@ class ProjectSettings:
         default_factory=lambda: [ShapeType.RECTANGLE, ShapeType.SQUARE, ShapeType.POLYGON]
     )
     keypoint_count: int = 17
+    keypoint_dimensions: int = 3
     language: str = "zh_CN"
     reopen_last_dataset: bool = True
     label_groups: list[LabelGroup] = field(default_factory=list)
@@ -124,6 +125,8 @@ class ProjectSettings:
         if not self.enabled_shapes:
             self.enabled_shapes = [ShapeType.RECTANGLE]
         self.keypoint_count = max(1, min(135, int(self.keypoint_count)))
+        if self.keypoint_dimensions not in (2, 3):
+            raise ValueError("keypoint_dimensions must be 2 or 3")
         if self.language not in {"zh_CN", "en_US"}:
             self.language = "zh_CN"
         if not self.label_groups:
@@ -152,6 +155,7 @@ class ProjectSettings:
             "metadata_path": str(self.metadata_path) if self.metadata_path else None,
             "enabled_shapes": [shape.value for shape in self.enabled_shapes],
             "keypoint_count": self.keypoint_count,
+            "keypoint_dimensions": self.keypoint_dimensions,
             "language": self.language,
             "reopen_last_dataset": self.reopen_last_dataset,
             "label_groups": [group.to_dict() for group in self.label_groups],
@@ -185,6 +189,7 @@ class ProjectSettings:
                 "enabled_shapes", [shape.value for shape in ShapeType]
             )],
             keypoint_count=value.get("keypoint_count", 17),
+            keypoint_dimensions=value.get("keypoint_dimensions", 3),
             language=value.get("language", "zh_CN"),
             reopen_last_dataset=bool(value.get("reopen_last_dataset", True)),
             label_groups=[LabelGroup.from_dict(item) for item in value.get("label_groups", [])],

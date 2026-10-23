@@ -143,6 +143,14 @@ class DatasetSynthesisDialog(_DirectoryDialog):
         self.format = QComboBox()
         for label, value in (("COCO", "coco"), ("YOLO", "yolo"), ("Pascal VOC", "voc")):
             self.format.addItem(label, value)
+        self.task = QComboBox()
+        english = getattr(getattr(parent, "settings", None), "language", "zh_CN") == "en_US"
+        self.task.addItem("Follow source dataset" if english else "跟随源数据集", None)
+        for label, value in (("YOLO Detection", "yolo_detection"), ("YOLO Segmentation", "yolo_segmentation"),
+                             ("YOLO Pose", "yolo_pose"), ("YOLO OBB", "yolo_obb")):
+            self.task.addItem(label, value)
+        self.task.setVisible(False)
+        self.format.currentIndexChanged.connect(lambda: self.task.setVisible(self.format.currentData() == "yolo"))
         layout = QVBoxLayout(self)
         set_content_margins(layout)
         layout.setSpacing(10)
@@ -151,6 +159,7 @@ class DatasetSynthesisDialog(_DirectoryDialog):
         form.addRow("\u5e27\u56fe\u76ee\u5f55", self._path_row(self.source_dir, False))
         form.addRow("\u5408\u6210\u76ee\u5f55", self._path_row(self.output_dir, True))
         form.addRow("\u6570\u636e\u683c\u5f0f", self.format)
+        form.addRow("Task" if english else "任务", self.task)
         card.addLayout(form)
         self._load_last_paths("synthesis", self.source_dir, self.output_dir)
         self._buttons(layout)
@@ -170,6 +179,7 @@ class DatasetSynthesisDialog(_DirectoryDialog):
             "source_dir": source,
             "output_dir": Path(output_text),
             "format_name": self.format.currentData(),
+            "output_task": self.task.currentData() if self.format.currentData() == "yolo" else None,
         }
         super().accept()
 

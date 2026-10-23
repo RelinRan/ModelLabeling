@@ -42,7 +42,10 @@ def yolo_keypoint_shape(root: Path) -> tuple[int, int] | None:
         return None
     if not isinstance(shape, (list, tuple)) or len(shape) != 2:
         raise ValueError("YOLO Pose kpt_shape must be [count, dimensions]")
-    return int(shape[0]), int(shape[1])
+    count, dimensions = int(shape[0]), int(shape[1])
+    if count <= 0 or dimensions not in (2, 3) or [count, dimensions] != list(shape):
+        raise ValueError("YOLO Pose kpt_shape must be [positive count, 2 or 3]")
+    return count, dimensions
 
 
 def yolo_keypoint_names(root: Path, class_id: int = 0) -> list[str]:

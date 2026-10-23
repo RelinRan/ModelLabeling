@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import yaml
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -91,12 +92,15 @@ class DatasetInitializer:
         annotation_dir.mkdir(exist_ok=True)
         yaml_path = root / "data.yaml"
         if not yaml_path.exists():
-            lines = [f"task: {cls._yaml_task(task_name)}"]
+            document = {"path": root.resolve().as_posix(),
+                        "train": image_dir.relative_to(root).as_posix(),
+                        "val": image_dir.relative_to(root).as_posix(),
+                        "task": cls._yaml_task(task_name),
+                        "names": [str(name).strip() for name in class_names or [] if str(name).strip()]}
             if task_name == "yolo_pose":
-                lines.append(f"kpt_shape: [{max(1, int(keypoint_count))}, 3]")
-            if class_names:
-                lines.append("names: [" + ", ".join(str(name).strip() for name in class_names if str(name).strip()) + "]")
-            yaml_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                document["kpt_shape"] = [max(1, int(keypoint_count)), 3]
+            yaml_path.write_text(yaml.safe_dump(document, allow_unicode=True, sort_keys=False,
+                                                 default_flow_style=None), encoding="utf-8")
             created.append(yaml_path)
         classes_path = root / "classes.txt"
         if class_names and not classes_path.exists():
@@ -163,12 +167,37 @@ class DatasetInitializer:
 
         copied = 0
         if source_dir is not None:
+            try:
+                detected = DatasetDetector.detect(Path(source_dir), allow_plain_images=False)
+            except ValueError:
+                detected = None
+            if detected is not None:
+                from .conversion_service import ConversionOptions, ConversionService
+                from src.models.annotation import LabelPreset
+                presets = [LabelPreset(name, i, "#00e5ff") for i, name in enumerate(class_names or [])]
+                report = ConversionService().convert(ConversionOptions(
+                    detected.format_name, Path(source_dir),
+                    "yolo" if task_name.startswith("yolo_") else task_name, target, presets,
+                    source_task=detected.task_name, output_task=task_name,
+                    force_structured_output=True, flatten_output=True,
+                ))
+                if report.failed:
+                    raise ValueError("Dataset import failed: " + "; ".join(report.errors[:5]))
+                detected_output = DatasetDetector.detect(target)
+                if task_name == "coco":
+                    payload = json.loads((detected_output.annotation_dir / "annotations.json").read_text(encoding="utf-8"))
+                    imported = len({item["image_id"] for item in payload.get("annotations", [])})
+                else:
+                    suffix = "*.txt" if task_name.startswith("yolo_") else "*.xml"
+                    imported = sum(1 for path in detected_output.annotation_dir.rglob(suffix)
+                                   if path.read_text(encoding="utf-8").strip()
+                                   and (suffix == "*.txt" or "<object>" in path.read_text(encoding="utf-8")))
+                return InitializedDataset(target, detected_output.image_dir, detected_output.annotation_dir,
+                                           task_name, (), report.succeeded, imported)
             copied = cls._copy_images(Path(source_dir), target / "images")
 
         info = cls.initialize(target, task_name, class_names, keypoint_count, allow_empty=True)
         imported = 0
-        if source_dir is not None:
-            imported = cls._import_annotations(Path(source_dir), info)
         return InitializedDataset(info.root, info.image_dir, info.annotation_dir, info.task_name, info.created, copied, imported)
 
     @staticmethod
@@ -192,33 +221,6 @@ class DatasetInitializer:
                     continue
             shutil.copy2(path, candidate)
         return len(images)
-
-    @staticmethod
-    def _import_annotations(source: Path, info: InitializedDataset) -> int:
-        """Import annotation files when the source folder is a dataset.
-
-        YOLO/VOC annotation files are matched per image stem; a COCO source
-        contributes its JSON document directly.
-        """
-        try:
-            detected = DatasetDetector.detect(source, allow_plain_images=False)
-        except ValueError:
-            return 0
-        imported = 0
-        if detected.format_name == "coco":
-            for json_path in detected.annotation_dir.glob("*.json"):
-                shutil.copy2(json_path, info.annotation_dir / json_path.name)
-                imported += 1
-            return imported
-        suffix = ".xml" if detected.format_name == "voc" else ".txt"
-        for image in sorted(info.image_dir.glob("*")):
-            if image.suffix.lower() not in IMAGE_EXTENSIONS:
-                continue
-            matches = [p for p in detected.annotation_dir.rglob(f"{image.stem}{suffix}")]
-            if matches:
-                shutil.copy2(matches[0], info.annotation_dir / f"{image.stem}{suffix}")
-                imported += 1
-        return imported
 
     @staticmethod
     def structure_summary(task_name: str) -> str:

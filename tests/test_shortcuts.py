@@ -4,12 +4,8 @@
 Replaces the throwaway probe that used to open whatever dataset the developer
 last had open. Everything here runs against ``synthetic_dataset``.
 
-The two-stroke chords that start with Ctrl+A / Ctrl+C / Ctrl+V are currently
-unreachable whenever the canvas has focus: CanvasView registers exact-match
-Ctrl+A/Ctrl+V/Ctrl+C shortcuts with WidgetWithChildrenShortcut, and Qt prefers
-a more specific context over a window-level two-stroke sequence. Those cases
-are marked xfail(strict=True) so that fixing the bindings turns them into
-failures that demand the markers be removed.
+Two-stroke chords must work from both panels and the canvas, while text
+editing and single-stroke canvas editing retain their normal behaviour.
 """
 import os
 
@@ -17,7 +13,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLineEdit
 from PySide6.QtTest import QTest
 
 from src.widgets.main_window import MainWindow
@@ -44,14 +40,6 @@ CHORDS = [
     ("Ctrl+T+S", [(Qt.Key.Key_T, CTRL), (Qt.Key.Key_S, NONE)], "open_statistics"),
     ("Ctrl+V+F", [(Qt.Key.Key_V, CTRL), (Qt.Key.Key_F, NONE)], "open_video_frames"),
 ]
-
-# Chords Qt cannot route while the canvas holds focus. Keyed by label.
-CANVAS_SHADOWED = {
-    "Ctrl+A+S", "Ctrl+A+L", "Ctrl+C+A", "Ctrl+C+D", "Ctrl+V+F",
-}
-# Ctrl+D+C has no binding at all any more: the menu still advertises it but
-# the registration was dropped.
-UNBOUND = {"Ctrl+D+C"}
 
 CHORD_IDS = [label for label, _, _ in CHORDS]
 
@@ -87,9 +75,6 @@ def _replay(win, app, focus_widget, keys):
 def test_chord_reaches_its_handler(window, label, keys, handler):
     """Every advertised chord must reach its handler from the label panel."""
     win, app = window
-    if label in UNBOUND:
-        pytest.xfail(f"{label}: menu advertises it but no binding is registered")
-
     fired = []
     if handler == "save_current":
         # Saving a real image is fine on the synthetic dataset, but assert on
@@ -114,10 +99,6 @@ def test_chord_reaches_its_handler_with_canvas_focused(window, label, keys, hand
     else:
         pytest.skip(f"{handler} does not exist in this build")
 
-    if label in CANVAS_SHADOWED or label in UNBOUND:
-        pytest.xfail(f"{label}: canvas-scoped exact-match shortcut shadows the sequence"
-                     if label in CANVAS_SHADOWED else f"{label}: no binding registered")
-
     _replay(win, app, win.canvas, keys)
     assert handler in fired, f"{label} did not reach {handler}"
 
@@ -127,6 +108,7 @@ def test_plain_keys_still_work_on_the_canvas(window):
     win, app = window
     canvas = win.canvas
     canvas._disable_draw_mode()
+    canvas.setFocus(Qt.FocusReason.OtherFocusReason)
     app.processEvents()
 
     toggles = []
@@ -163,3 +145,56 @@ def test_ctrl_a_selects_all_on_the_canvas(window):
     app.processEvents()
 
     assert calls == [1], f"Ctrl+A fired select_all {len(calls)} times"
+
+
+@pytest.mark.parametrize("label,keys,handler", [item for item in CHORDS if len(item[1]) == 2],
+                         ids=[item[0] for item in CHORDS if len(item[1]) == 2])
+def test_chord_works_while_control_is_held(window, label, keys, handler):
+    win, app = window
+    fired = []
+    setattr(win, handler, lambda *args, **kwargs: fired.append(handler))
+    _replay(win, app, win.canvas, [(key, CTRL) for key, _ in keys])
+    assert fired == [handler], label
+
+
+def test_w_in_text_input_does_not_toggle_drawing(window):
+    win, app = window
+    editor = QLineEdit(win)
+    editor.show()
+    editor.setFocus(Qt.FocusReason.OtherFocusReason)
+    app.processEvents()
+    toggles = []
+    win._toggle_canvas_drawing = lambda: toggles.append(1)
+
+    QTest.keyClick(editor, Qt.Key.Key_W)
+    app.processEvents()
+
+    assert editor.text() == "w"
+    assert not toggles
+
+
+def test_canvas_select_copy_paste_in_quick_succession(window):
+    win, app = window
+    calls = []
+    win.canvas.select_all = lambda: calls.append("select")
+    win.canvas.copy_selected = lambda: calls.append("copy")
+    win.canvas.paste_clipboard = lambda: calls.append("paste")
+
+    _replay(win, app, win.canvas, [(Qt.Key.Key_A, CTRL), (Qt.Key.Key_C, CTRL), (Qt.Key.Key_V, CTRL)])
+    QTest.qWait(1250)
+    app.processEvents()
+
+    assert calls == ["select", "copy", "paste"]
+
+
+def test_video_chord_never_pastes_into_the_canvas(window):
+    win, app = window
+    calls = []
+    win.canvas.paste_clipboard = lambda: calls.append("paste")
+    win.open_video_frames = lambda: calls.append("video")
+
+    _replay(win, app, win.canvas, [(Qt.Key.Key_V, CTRL), (Qt.Key.Key_F, NONE)])
+    QTest.qWait(1250)
+    app.processEvents()
+
+    assert calls == ["video"]

@@ -55,7 +55,7 @@ class CleanupDialog(QDialog):
         layout = QVBoxLayout(self); set_content_margins(layout); layout.setSpacing(10)
 
         # ---- source card (same language as the conversion dialog) ----------
-        source_card = section_card(layout, "数据集合" if not self.english else "Dataset")
+        source_card = section_card(layout, "数据集" if not self.english else "Dataset")
         source_form = configure_form(QFormLayout()); source_form.setVerticalSpacing(8)
         self.source_path = QLineEdit(default_source)
         self.source_path.textChanged.connect(self._on_source_changed)
