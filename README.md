@@ -28,14 +28,14 @@ A Windows-first Python/PySide6 desktop annotation workbench for YOLO / Pascal VO
 
 | Category | Capability |
 | --- | --- |
-| Dataset tasks | YOLO detection / segmentation / pose / OBB, Pascal VOC, COCO |
+| Dataset tasks | YOLO Detection / Segmentation / Pose / OBB, Pascal VOC, COCO |
 | Annotation methods | Rectangle, square, polygon, rotated box, keypoints (filtered by the current dataset's task) |
 | Keypoint types | Predefined point count, point names, and annotation label (Ctrl+K+G); built-in Pose (17 COCO person points, `pose`) and Car (`car`); picking a type on the canvas arms its whole schema |
 | Dataset creation | Workspace wizard: workspace + name + options; source images are copied in (existing datasets import their annotations too) |
 | Compatibility | Fully unannotated datasets open directly (empty labels/, no Annotations/, plain image folders) |
-| Auto labeling | YOLO detection / segmentation / pose / OBB ONNX decoding; runs in background, stoppable |
-| Conversion | Batch YOLO / VOC / COCO conversion preserving layout and data.yaml class names |
-| Video tools | Recursively extract frames from nested video folders at a selected FPS; synthesize COCO / YOLO / Pascal VOC datasets from frame folders |
+| Auto labeling | YOLO Detection / Segmentation / Pose / OBB ONNX decoding; runs in background, stoppable |
+| Conversion | Batch YOLO / Pascal VOC / COCO conversion preserving layout and data.yaml class names |
+| Video tools | Recursively extract frames from nested video folders at a selected FPS; synthesize YOLO / Pascal VOC / COCO datasets from frame folders |
 | Editing | Continuous drawing, undo/redo, move/resize/rotate, keypoint visibility (COCO 0/1/2) |
 | Large datasets | SQLite path index + keyset pagination; smooth with tens of thousands of images |
 | UI | IDEA-style dark theme, English/Chinese, every menu/dialog/status bar refreshes live |
@@ -104,7 +104,7 @@ Selecting a method **stays armed for continuous drawing** (finish one shape, sta
 | Rotated box (OBB) | Drag like a rectangle (starts axis aligned) | Drag the green handle to rotate around the center, **Shift snaps to 15°**; drag inside to move |
 | Keypoints (Pose) | Click each point; auto-finishes at the type's count; **Tab** skips a point (visibility 0); double click / Enter finishes early | Drag point markers (the box follows); **right click a marker cycles visibility 2→0→1**; the box itself cannot be dragged — its geometry is derived from the points |
 
-The combo at the canvas top-left lists only the methods the current dataset supports (e.g. YOLO detection shows rectangle/square only). In keypoint mode the row continues with the **keypoint type selector** and a live **progress pill** (`point name (i/N)`); the point count is defined by the selected type, not edited on the canvas.
+The combo at the canvas top-left lists only the methods the current dataset supports (e.g. YOLO Detection shows rectangle/square only). In keypoint mode the row continues with the **keypoint type selector** and a live **progress pill** (`point name (i/N)`); the point count is defined by the selected type, not edited on the canvas.
 
 General operations:
 
@@ -181,12 +181,12 @@ Predefine everything about a keypoint schema once, then just pick it while annot
 ### Statistics & conversion
 
 - Statistics (Ctrl+T+S): totals, per-class distribution, progress (computed in the background)
-- Conversion (Ctrl+D+C): batch YOLO/VOC/COCO
+- Conversion (Ctrl+D+C): batch YOLO / Pascal VOC / COCO
 
 ### Video frame extraction & dataset synthesis
 
 - Extract video frames (Ctrl+V+F): recursively scans the selected video folder (including nested directories) and samples frames at the chosen FPS into the selected output directory (default: 5 FPS). Progress appears at the bottom-right of the main status bar, followed by a readable completion summary.
-- Synthesize dataset (Ctrl+D+S): builds a COCO, YOLO, or Pascal VOC dataset from the selected frame folder. Choose an empty output directory to avoid overwriting existing data. Progress appears at the bottom-right of the main status bar; the completion message reports success, failure, and skipped counts.
+- Synthesize dataset (Ctrl+D+S): builds a YOLO, Pascal VOC, or COCO dataset from the selected frame folder. Choose an empty output directory to avoid overwriting existing data. Progress appears at the bottom-right of the main status bar; the completion message reports success, failure, and skipped counts.
 
 ### Auto labeling (Ctrl+A+L)
 
@@ -232,7 +232,7 @@ src/
 │  ├─ dataset_initializer.py  workspace-based dataset creation
 │  ├─ dataset_index.py     per-dataset SQLite path index (paging/filter/locate)
 │  ├─ dataset_session.py   authoritative context for the open dataset
-│  ├─ annotation_service.py format adapters & load/save (YOLO×4 / VOC / COCO)
+│  ├─ annotation_service.py format adapters & load/save (YOLO ×4 / Pascal VOC / COCO)
 │  ├─ coco_store.py        COCO SQLite working copy (per-image transactions)
 │  ├─ label_group_store.py app-level label template library (SQLite)
 │  ├─ keypoint_group_store.py app-level keypoint-type library (SQLite)

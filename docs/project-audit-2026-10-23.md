@@ -16,7 +16,7 @@ No real dataset was converted, annotated, or deleted for this audit.
 | P2 | Global W handling could interfere with text entry or another dialog. | Restrict commands to the main window and exclude text editors, combo boxes, and numeric editors. |
 | P2 | Different image directories could share one index when their supplied dataset root matched. | Identify an index by resolved image directory, annotation directory, and format. Old cache files are retained; a new index is built on the next open. |
 | P2 | Opening a plain image folder replaced the selected dataset root with its parent. | Preserve the detected session root during scanning. |
-| P2 | Nested VOC/YOLO annotation categories were missed during conversion. Unknown sparse YOLO IDs were assigned different IDs. | Resolve annotation branches per image and preserve source IDs. |
+| P2 | Nested Pascal VOC/YOLO annotation categories were missed during conversion. Unknown sparse YOLO IDs were assigned different IDs. | Resolve annotation branches per image and preserve source IDs. |
 | P2 | Format validation consumed one-shot iterators before checking multipart or task-specific constraints. | Materialize the input once before validation passes. |
 | P2 | Application shutdown did not wait for comparison and image-count threads. | Include both in the existing shutdown wait sequence. |
 | P2 | Tests used real user label/keypoint databases and index caches. Empty real settings also caused a false isolation failure. | Redirect databases and indexes into per-test directories and correct the empty-settings assertion. |

@@ -21,6 +21,7 @@ from PIL import Image
 
 from src.models.annotation import LabelPreset, label_color
 from .dataset_detector import DatasetDetector
+from .display_names import format_name
 from .onnx_service import YoloOnnxDetector
 from .yolo_metadata import yolo_class_names
 
@@ -52,8 +53,6 @@ DEFAULT_WORKERS = 3
 WINDOW_FACTOR = 3
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
-
-FORMAT_LABELS = {"voc": "Pascal VOC", "yolo": "YOLO", "coco": "COCO"}
 
 
 @dataclass(frozen=True)
@@ -122,7 +121,7 @@ class CompareReport:
 
     @property
     def display_format(self) -> str:
-        return FORMAT_LABELS.get(self.format_name, self.format_name)
+        return format_name(self.format_name)
 
 
 def report_path_for(dataset_dir: Path) -> Path:

@@ -76,8 +76,8 @@ RULES: dict[str, RuleSpec] = {
          "<object> #{index} has {field}={value}, which is not a number")),
     "voc.box.not_integral": RuleSpec(
         Severity.REVIEW, ("坐标非整", "Non-integer coordinate"),
-        ("<object> #{index} 的坐标含小数，VOC 规范要求整数",
-         "<object> #{index} has fractional coordinates; VOC requires integers")),
+        ("<object> #{index} 的坐标含小数，Pascal VOC 规范要求整数",
+         "<object> #{index} has fractional coordinates; Pascal VOC requires integers")),
     "voc.box.degenerate": RuleSpec(
         Severity.STRUCTURAL, ("退化框", "Degenerate box"),
         ("<object> #{index} 的宽高为 {width}x{height}",

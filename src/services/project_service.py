@@ -7,6 +7,7 @@ from src.models.annotation import Annotation
 from src.models.project import ProjectSettings
 from .annotation_service import AnnotationService
 from .dataset_detector import DatasetDetector
+from .display_names import format_name as display_format_name
 from .label_group_store import LabelGroupStore
 
 
@@ -75,7 +76,7 @@ class ProjectService:
             sibling = root.parent / sibling_name
             if sibling.is_dir():
                 return root, sibling
-        raise ValueError(f"未识别的{format_name.upper()}数据集目录: {root}")
+        raise ValueError(f"未识别的 {display_format_name(format_name)} 数据集目录: {root}")
 
     def save_current(
         self,

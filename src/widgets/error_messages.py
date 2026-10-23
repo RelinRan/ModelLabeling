@@ -17,8 +17,8 @@ _PATTERNS: list[tuple[str, str]] = [
     # annotation_service
     ("label is not in presets: ", "标签不在类别列表中: "),
     ("label is not in COCO categories: ", "标签不在 COCO 类别中: "),
-    ("missing object name in ", "VOC 缺少 object/name: "),
-    ("missing bndbox for ", "VOC 缺少 bndbox: "),
+    ("missing object name in ", "Pascal VOC 缺少 object/name: "),
+    ("missing bndbox for ", "Pascal VOC 缺少 bndbox: "),
     ("YOLO Pose requires keypoint annotations", "YOLO 关键点格式需要关键点标注"),
     ("YOLO Pose requires an outer bounding box", "YOLO 关键点格式需要外接框"),
     ("YOLO Pose kpt_shape must use [count, 3]", "kpt_shape 必须为 [数量, 3] 格式"),

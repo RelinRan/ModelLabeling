@@ -7,19 +7,10 @@ from PySide6.QtWidgets import QComboBox, QDialog, QFileDialog, QFormLayout, QHBo
 
 from src.models.annotation import ShapeType
 from src.services.dataset_initializer import DatasetInitializer
+from src.services.display_names import TASK_VALUES, format_name, task_label
 from src.services.format_capabilities import CAPABILITIES, task_for_format
 from .form_layout import configure_buttons, configure_form, section_card, set_confirm_button
 from .numeric_stepper import NumericStepper
-
-
-TASK_OPTIONS = (
-    ("yolo_detection", "YOLO 检测（矩形框）", "YOLO Detection (boxes)"),
-    ("yolo_segmentation", "YOLO 分割（多边形）", "YOLO Segmentation (polygons)"),
-    ("yolo_pose", "YOLO 关键点（人体/姿态）", "YOLO Pose (keypoints)"),
-    ("yolo_obb", "YOLO 旋转框（倾斜目标）", "YOLO OBB (rotated boxes)"),
-    ("voc", "Pascal VOC（矩形框）", "Pascal VOC (boxes)"),
-    ("coco", "COCO（框/多边形/关键点）", "COCO (boxes/polygons/keypoints)"),
-)
 
 
 class DatasetInitDialog(QDialog):
@@ -67,8 +58,8 @@ class DatasetInitDialog(QDialog):
         self.annotation_form = annotation_form = configure_form(QFormLayout())
         annotation_form.setVerticalSpacing(8)
         self.task_combo = QComboBox()
-        for value, zh, en in TASK_OPTIONS:
-            self.task_combo.addItem(en if self.english else zh, value)
+        for value in TASK_VALUES:
+            self.task_combo.addItem(task_label(value), value)
         self.task_combo.currentIndexChanged.connect(self._refresh_hint)
         annotation_form.addRow("标注格式" if not self.english else "Format", self.task_combo)
 
@@ -192,8 +183,8 @@ class DatasetInitDialog(QDialog):
         try:
             detected = DatasetDetector.detect(source_path, allow_plain_images=False)
             detected_text = (
-                f"，源是 {detected.format_name} 数据集，标注将一并导入"
-                if not english else f"; source is a {detected.format_name} dataset, annotations will be imported"
+                f"，源是 {format_name(detected.format_name)} 数据集，标注将一并导入"
+                if not english else f"; source is a {format_name(detected.format_name)} dataset, annotations will be imported"
             )
         except ValueError:
             detected_text = ""

@@ -13,6 +13,7 @@ from src.services.cleanup import FixPolicy, fix_dataset, scan_dataset
 from src.services.cleanup.report import RULES, Severity
 from src.services.cleanup.runner import DEFAULT_MIN_BOX_SIZE as MIN_BOX_SIZE
 from src.services.dataset_detector import DatasetDetector
+from src.services.display_names import format_options
 from .common_dialogs import AppDialog
 from .form_layout import configure_buttons, configure_form, section_card, set_confirm_button, set_content_margins, size_buttons
 
@@ -61,7 +62,8 @@ class CleanupDialog(QDialog):
         self.source_path.textChanged.connect(self._on_source_changed)
         source_form.addRow("目录" if not self.english else "Directory", self._path_row())
         self.source_format = QComboBox()
-        self.source_format.addItem("COCO", "coco"); self.source_format.addItem("YOLO", "yolo"); self.source_format.addItem("Pascal VOC", "voc")
+        for label, value in format_options("en_US" if self.english else "zh_CN"):
+            self.source_format.addItem(label, value)
         source_form.addRow("格式" if not self.english else "Format", self.source_format)
         # Shorter-side threshold for the "tiny box" finding. It is an
         # annotation policy rather than a property of the data, so it is a

@@ -35,6 +35,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
+from ..display_names import format_name
 from .report import RULES, Plan, Severity
 from .runner import scan_dataset
 
@@ -493,7 +494,7 @@ def apply_repairs(detected, repairs: list[Repair], backup: Backup,
         "coco": _apply_coco,
     }.get(detected.format_name)
     if dispatch is None:
-        return [f"未知的数据集格式：{detected.format_name}"]
+        return [f"未知的数据集格式：{format_name(detected.format_name)}"]
     return dispatch(detected, grouped, backup, presets)
 
 

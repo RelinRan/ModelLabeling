@@ -8,7 +8,7 @@ from PySide6.QtWidgets import QFileDialog, QCheckBox, QComboBox, QDialog, QFormL
 from src.models.annotation import LabelPreset
 from src.services.conversion_service import ConversionOptions, ConversionService
 from src.services.dataset_detector import DatasetDetector
-from src.services.display_names import format_name, task_name
+from src.services.display_names import format_options, task_options
 from .common_dialogs import AppDialog
 from .form_layout import configure_buttons, configure_form, section_card, set_confirm_button, set_content_margins, size_buttons
 
@@ -49,8 +49,8 @@ class ConversionDialog(QDialog):
         self.source_path = QLineEdit(); self.output_path = QLineEdit()
         self.source_format = QComboBox(); self.output_format = QComboBox()
         for combo in (self.source_format, self.output_format):
-            for value in ("coco", "yolo", "voc"):
-                combo.addItem(format_name(value, "en_US" if english else "zh_CN"), value)
+            for label, value in format_options("en_US" if english else "zh_CN"):
+                combo.addItem(label, value)
         self.source_task = QComboBox(); self.output_task = QComboBox()
         self.merge_parts = QCheckBox("Connect disconnected contours (keep all regions)" if english else "连接不连通轮廓（保留所有区域）")
         self.merge_parts.setVisible(False)
@@ -102,21 +102,11 @@ class ConversionDialog(QDialog):
                 self.source_task.setCurrentIndex(index)
 
     def _refresh_task_options(self) -> None:
-        english = getattr(self, "english", False)
-        def fill(combo: QComboBox, format_name: str) -> None:
+        language = "en_US" if getattr(self, "english", False) else "zh_CN"
+        def fill(combo: QComboBox, format_value) -> None:
             current = combo.currentData()
-            options = {
-                "yolo": [
-                    (f"YOLO · {task_name('yolo_detection', 'en_US' if english else 'zh_CN')}", "yolo_detection"),
-                    (f"YOLO · {task_name('yolo_segmentation', 'en_US' if english else 'zh_CN')}", "yolo_segmentation"),
-                    (f"YOLO · {task_name('yolo_pose', 'en_US' if english else 'zh_CN')}", "yolo_pose"),
-                    (f"YOLO · {task_name('yolo_obb', 'en_US' if english else 'zh_CN')}", "yolo_obb"),
-                ],
-                "coco": [("COCO", "coco")],
-                "voc": [("Pascal VOC", "voc")],
-            }.get(str(format_name), [])
             combo.blockSignals(True); combo.clear()
-            for label, value in options: combo.addItem(label, value)
+            for label, value in task_options(format_value, language): combo.addItem(label, value)
             index = combo.findData(current); combo.setCurrentIndex(index if index >= 0 else 0); combo.blockSignals(False)
         fill(self.source_task, self.source_format.currentData())
         fill(self.output_task, self.output_format.currentData())
@@ -177,7 +167,7 @@ class ConversionDialog(QDialog):
             detected = "coco"
         if detected is None:
             if show_error:
-                AppDialog.information("提示", "\u4e0d\u652f\u6301\u6216\u65e0\u6cd5\u8bc6\u522b\u8be5\u6570\u636e\u96c6\u683c\u5f0f\u3002\u8bf7\u9009\u62e9 COCO\u3001YOLO \u6216 Pascal VOC \u6570\u636e\u96c6\u3002", self)
+                AppDialog.information("提示", "\u4e0d\u652f\u6301\u6216\u65e0\u6cd5\u8bc6\u522b\u8be5\u6570\u636e\u96c6\u683c\u5f0f\u3002\u8bf7\u9009\u62e9 YOLO\u3001Pascal VOC \u6216 COCO \u6570\u636e\u96c6\u3002", self)
             return False
         self.source_format.setCurrentIndex(self.source_format.findData(detected))
         if detected == "yolo" and self.source_task.findData("yolo_detection") >= 0:

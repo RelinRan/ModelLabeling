@@ -7,7 +7,7 @@ from PySide6.QtWidgets import QComboBox, QDialog, QFileDialog, QFormLayout, QHBo
 
 from src.models.annotation import ShapeType
 from src.models.project import ProjectSettings
-from src.services.display_names import format_name, task_name
+from src.services.display_names import format_options, task_options
 from src.services.format_capabilities import CAPABILITIES, task_for_format
 from .canvas_view import CanvasView
 from .i18n import LANGUAGES
@@ -25,8 +25,8 @@ class SettingsDialog(QDialog):
         self.setObjectName("settingsDialog"); self.resize(500, 335); self.setMinimumWidth(470); self.setWindowTitle("Application Settings" if self.english else "应用设置")
         self.image_dir = QLineEdit(str(self.settings.image_dir or "")); self.annotation_dir = QLineEdit(str(self.settings.annotation_dir or "")); self.onnx_model = QLineEdit(str(self.settings.onnx_model_path or ""))
         self.format = QComboBox()
-        for value in ("yolo", "voc", "coco"):
-            self.format.addItem(format_name(value, "en_US" if self.english else "zh_CN"), value)
+        for label, value in format_options("en_US" if self.english else "zh_CN"):
+            self.format.addItem(label, value)
         self.format.setCurrentIndex(max(0, self.format.findData(self.settings.annotation_format)))
         self.task = QComboBox()
         self.format.currentIndexChanged.connect(self._refresh_task_options)
@@ -81,20 +81,10 @@ class SettingsDialog(QDialog):
 
     def _refresh_task_options(self) -> None:
         current = self.settings.dataset_task or ""
-        format_name = str(self.format.currentData())
-        options = {
-            "yolo": [
-                (f"YOLO · {task_name('yolo_detection', 'en_US' if self.english else 'zh_CN')}", "yolo_detection"),
-                (f"YOLO · {task_name('yolo_segmentation', 'en_US' if self.english else 'zh_CN')}", "yolo_segmentation"),
-                (f"YOLO · {task_name('yolo_pose', 'en_US' if self.english else 'zh_CN')}", "yolo_pose"),
-                (f"YOLO · {task_name('yolo_obb', 'en_US' if self.english else 'zh_CN')}", "yolo_obb"),
-            ],
-            "coco": [("COCO" if self.english else "COCO", "coco")],
-            "voc": [("Pascal VOC" if self.english else "Pascal VOC", "voc")],
-        }.get(format_name, [])
+        language = "en_US" if self.english else "zh_CN"
         self.task.blockSignals(True)
         self.task.clear()
-        for label, value in options:
+        for label, value in task_options(self.format.currentData(), language):
             self.task.addItem(label, value)
         index = self.task.findData(current)
         self.task.setCurrentIndex(index if index >= 0 else 0)

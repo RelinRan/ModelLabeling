@@ -316,7 +316,10 @@ def test_conversion_and_synthesis_dialog_offer_all_yolo_tasks():
     assert not dialog.merge_parts.isHidden()
     dialog.close()
     synthesis = DatasetSynthesisDialog()
-    assert {synthesis.task.itemData(i) for i in range(synthesis.task.count())} == {None, *ROWS}
+    synthesis.format.setCurrentIndex(synthesis.format.findData("yolo"))
+    # Every YOLO task is offered explicitly; there is no "follow source"
+    # sentinel, so the user always chooses the output task.
+    assert {synthesis.task.itemData(i) for i in range(synthesis.task.count())} == set(ROWS)
     synthesis.close()
 
 

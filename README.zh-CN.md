@@ -2,7 +2,7 @@
 
 **[English](README.md)** | 简体中文
 
-Windows 优先的 Python/PySide6 桌面图像标注工作台。面向 YOLO / Pascal VOC / COCO 数据集的快速标注、管理与转换，覆盖 Ultralytics 官方全部四种标注文件任务（检测、分割、关键点、旋转框），内置大数据集索引、新建数据集向导与 ONNX 自动标注。
+Windows 优先的 Python/PySide6 桌面图像标注工作台。面向 YOLO / Pascal VOC / COCO 数据集的快速标注、管理与转换，覆盖 Ultralytics 官方全部四种标注文件任务（Detection、Segmentation、Pose、OBB），内置大数据集索引、新建数据集向导与 ONNX 自动标注。
 
 - 版本：v1.0.1
 - 作者：RelinRan · [GitHub](https://github.com/RelinRan) · relinran@foxmail.com
@@ -28,13 +28,13 @@ Windows 优先的 Python/PySide6 桌面图像标注工作台。面向 YOLO / Pas
 
 | 类别 | 能力 |
 | --- | --- |
-| 数据集任务 | YOLO 检测 / YOLO 分割 / YOLO 关键点(Pose) / YOLO 旋转框(OBB) / Pascal VOC / COCO |
+| 数据集任务 | YOLO Detection / YOLO Segmentation / YOLO Pose / YOLO OBB / Pascal VOC / COCO |
 | 标注方式 | 矩形、正方形、多边形、旋转框、关键点位（按当前数据集能力自动过滤） |
 | 点位类型 | 预定义点数、点位名称与标注标签 (Ctrl+K+G)；内置「姿态」(17 点 COCO 人体，标签 pose) 与「汽车」(标签 car)；画布上一键套用整套 schema |
 | 数据集初始化 | 新建向导：工作空间 + 名称 + 参数，图片素材复制进来（可导入已有数据集标注） |
 | 兼容性 | 完全无标注的数据集（空 labels/、无 Annotations/、纯图片文件夹）可直接打开 |
-| 自动标注 | YOLO 检测 / 分割 / 关键点 / 旋转框 ONNX 解码，后台可停止 |
-| 数据转换 | YOLO / VOC / COCO 批量互转，保留目录层级与 data.yaml 类名 |
+| 自动标注 | YOLO Detection / Segmentation / Pose / OBB ONNX 解码，后台可停止 |
+| 数据转换 | YOLO / Pascal VOC / COCO 批量互转，保留目录层级与 data.yaml 类名 |
 | 编辑体验 | 连续绘制、撤销/重做、拖动/缩放/旋转、关键点可见性（COCO 0/1/2 规范） |
 | 大数据集 | SQLite 路径索引 + keyset 分页，万级图片列表流畅 |
 | 界面 | IDEA 风格深色 UI，中英双语，所有菜单/对话框/状态栏随语言即时刷新 |
@@ -103,7 +103,7 @@ JSON 含 `images`（id/file_name/width/height）、`annotations`（image_id/cate
 | 旋转框 (OBB) | 像矩形一样拖拽画出 | 选中后拖动绿色手柄绕中心旋转，**Shift 吸附 15°**；框内拖动移动 |
 | 关键点位 (Pose) | 逐点单击，点满类型点数自动完成；**Tab** 跳过当前点（记为未标注）；双击/Enter 提前完成 | 拖动点位标记（框自动跟随）；**右键点位循环可见性 2→0→1**；框体不可拖动——外接框由点位推导 |
 
-画布左上角的下拉框只列出当前数据集支持的方式（如 YOLO 检测只有矩形/正方形）。关键点模式下同一行依次是**点位类型选择器**和实时**进度胶囊**（`点位名 (i/N)`）；点位数量由所选类型决定，画布上不再单独改数。
+画布左上角的下拉框只列出当前数据集支持的方式（如 YOLO Detection 只有矩形/正方形）。关键点模式下同一行依次是**点位类型选择器**和实时**进度胶囊**（`点位名 (i/N)`）；点位数量由所选类型决定，画布上不再单独改数。
 
 通用操作：
 
@@ -180,7 +180,7 @@ A/D 或 ↑/↓ 切换（首尾安全）；**滚轮缩放**（以光标为锚点
 ### 数据统计与转换
 
 - 统计 (Ctrl+T+S)：总标注数、类别分布、标注进度（后台线程计算，完成后可查）
-- 转换 (Ctrl+D+C)：YOLO/VOC/COCO 批量互转
+- 转换 (Ctrl+D+C)：YOLO / Pascal VOC / COCO 批量互转
 
 ### 自动标注 (Ctrl+A+L)
 
@@ -188,7 +188,7 @@ A/D 或 ↑/↓ 切换（首尾安全）；**滚轮缩放**（以光标为锚点
 
 已有标注的 YOLO 数据集必须与模型的任务、类别一致，避免把旧标注误读成其他任务。旋转框自动标注输出到 YOLO OBB；Pascal VOC 不扩展私有多边形或关键点字段。
 
-转换和数据合成默认保留源 YOLO 任务，也可指定目标任务。YOLO 输出统一包含 `images/`、`labels/`、类别表及带训练路径的 `data.yaml`。COCO 不连通多边形转 YOLO 分割可显式勾选连接轮廓；自动分割结果使用往返连接边保留所有外轮廓。矩形转 OBB、OBB 转多边形保留几何信息；需要编造关键点或丢弃几何信息的转换会被拒绝。详见[四任务支持与验收说明](docs/yolo-four-task-support.md)。
+转换和数据合成默认保留源 YOLO 任务，也可指定目标任务。YOLO 输出统一包含 `images/`、`labels/`、类别表及带训练路径的 `data.yaml`。COCO 不连通多边形转 YOLO Segmentation 可显式勾选连接轮廓；自动分割结果使用往返连接边保留所有外轮廓。矩形转 OBB、OBB 转多边形保留几何信息；需要编造关键点或丢弃几何信息的转换会被拒绝。详见[四任务支持与验收说明](docs/yolo-four-task-support.md)。
 
 ## 快捷键
 
@@ -226,7 +226,7 @@ src/
 │  ├─ dataset_initializer.py  新建向导的原地初始化
 │  ├─ dataset_index.py     数据集级 SQLite 路径索引（分页/筛选/定位）
 │  ├─ dataset_session.py   当前数据集的权威上下文
-│  ├─ annotation_service.py格式适配与加载/保存（YOLO×4 / VOC / COCO）
+│  ├─ annotation_service.py格式适配与加载/保存（YOLO ×4 / Pascal VOC / COCO）
 │  ├─ coco_store.py        COCO 的 SQLite 工作副本（单图事务编辑）
 │  ├─ label_group_store.py 应用级标签模板库（SQLite）
 │  ├─ keypoint_group_store.py 应用级点位类型库（SQLite）

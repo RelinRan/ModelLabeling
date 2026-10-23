@@ -54,6 +54,29 @@ def test_video_tool_dialogs_have_plain_bordered_forms_and_default_fps():
     assert not synthesis_dialog.findChildren(QLabel, "sectionCardTitle")
     assert not synthesis_dialog.findChildren(QLabel, "sectionCardDot")
 
+def test_synthesis_task_choices_follow_the_selected_format():
+    from PySide6.QtWidgets import QApplication
+    from src.widgets.video_tools_dialogs import DatasetSynthesisDialog
+
+    app = QApplication.instance() or QApplication([])
+    dialog = DatasetSynthesisDialog()
+
+    def labels() -> list[str]:
+        return [dialog.task.itemText(index) for index in range(dialog.task.count())]
+
+    # COCO and Pascal VOC have one task: the format itself.
+    assert dialog.format.currentData() == "coco"
+    assert labels() == ["COCO"]
+    dialog.format.setCurrentIndex(dialog.format.findData("voc"))
+    assert labels() == ["Pascal VOC"]
+    # YOLO offers its four tasks and no "follow source dataset" sentinel.
+    dialog.format.setCurrentIndex(dialog.format.findData("yolo"))
+    assert labels() == ["YOLO Detection", "YOLO Segmentation", "YOLO Pose", "YOLO OBB"]
+    assert [dialog.task.itemData(index) for index in range(dialog.task.count())] == [
+        "yolo_detection", "yolo_segmentation", "yolo_pose", "yolo_obb",
+    ]
+    dialog.close()
+
 def test_video_tool_help_is_localized_and_documents_progress():
     from PySide6.QtWidgets import QApplication, QLabel, QPlainTextEdit, QWidget
     from src.widgets.help_dialogs import AboutDialog, ShortcutsDialog, UsageGuideDialog

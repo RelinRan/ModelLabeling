@@ -44,7 +44,7 @@ class _LegacyAboutDialog(QDialog):
         layout.addWidget(title)
         table = _table_layout([
             ("产品", "桌面端图像标注工作台"),
-            ("功能", "六种数据集任务：YOLO 检测/分割/关键点/旋转框、Pascal VOC、COCO"),
+            ("功能", "六种数据集任务：YOLO Detection / Segmentation / Pose / OBB、Pascal VOC、COCO"),
             ("标注", "支持矩形、正方形、多边形绘制、拖拽调整与快捷操作"),
             ("能力", "工作空间式新建向导、大数据集快速打开、ONNX 自动标注、批量转换与统计"),
             ("版本", "v1.0.1"),
@@ -77,14 +77,14 @@ class AboutDialog(QDialog):
         layout.addWidget(title)
         rows = ([
             ("Product", "Desktop image annotation workbench"),
-            ("Formats", "YOLO detection / segmentation / pose / OBB, Pascal VOC, COCO"),
+            ("Formats", "YOLO Detection / Segmentation / Pose / OBB, Pascal VOC, COCO"),
             ("Annotation", "Rectangle, square, polygon, rotated box, keypoints; undo/redo and continuous drawing"),
             ("Tools", "Dataset wizard, large-dataset indexing, ONNX auto labeling, conversion, statistics, video frame extraction and dataset synthesis"),
             ("Version", "v1.0.1"), ("Author", "RelinRan"),
             ("GitHub", "https://github.com/RelinRan"), ("Email", "relinran@foxmail.com"),
         ] if english else [
             ("\u4ea7\u54c1", "\u684c\u9762\u7aef\u56fe\u50cf\u6807\u6ce8\u5de5\u4f5c\u53f0"),
-            ("\u6570\u636e\u683c\u5f0f", "YOLO \u68c0\u6d4b / \u5206\u5272 / \u5173\u952e\u70b9 / \u65cb\u8f6c\u6846\u3001Pascal VOC\u3001COCO"),
+            ("\u6570\u636e\u683c\u5f0f", "YOLO Detection / Segmentation / Pose / OBB\u3001Pascal VOC\u3001COCO"),
             ("\u6807\u6ce8", "\u77e9\u5f62\u3001\u6b63\u65b9\u5f62\u3001\u591a\u8fb9\u5f62\u3001\u65cb\u8f6c\u6846\u3001\u5173\u952e\u70b9\uff1b\u652f\u6301\u64a4\u9500\u91cd\u505a\u548c\u8fde\u7eed\u7ed8\u5236"),
             ("\u529f\u80fd", "\u6570\u636e\u96c6\u521b\u5efa\u5411\u5bfc\u3001\u5927\u6570\u636e\u96c6\u7d22\u5f15\u3001ONNX \u81ea\u52a8\u6807\u6ce8\u3001\u683c\u5f0f\u8f6c\u6362\u3001\u6570\u636e\u7edf\u8ba1\u3001\u89c6\u9891\u63d0\u5e27\u4e0e\u6570\u636e\u5408\u6210"),
             ("\u7248\u672c", "v1.0.1"), ("\u4f5c\u8005", "RelinRan"),
@@ -150,7 +150,7 @@ class UsageGuideDialog(QDialog):
 3. \u4f7f\u7528 A/D \u6216\u65b9\u5411\u952e\u5207\u6362\u56fe\u7247\uff1b\u6807\u6ce8\u81ea\u52a8\u4fdd\u5b58\u3002
 4. \u4f7f\u7528 Ctrl+Z / Ctrl+Y \u64a4\u9500 / \u91cd\u505a\u3002
 
-\u652f\u6301 YOLO \u68c0\u6d4b\u3001\u5206\u5272\u3001Pose\u3001OBB\uff0cPascal VOC \u548c COCO \u6570\u636e\u96c6\u3002"""),
+\u652f\u6301 YOLO Detection / Segmentation / Pose / OBB\uff0cPascal VOC \u548c COCO \u6570\u636e\u96c6\u3002"""),
             ("\u6807\u6ce8\u4e0e\u5feb\u6377\u952e", """\u7ed8\u5236\u65b9\u5f0f
   \u77e9\u5f62 / \u6b63\u65b9\u5f62\uff1a\u6309\u4f4f\u5de6\u952e\u62d6\u52a8
   \u591a\u8fb9\u5f62\uff1a\u9010\u70b9\u70b9\u51fb\uff0c\u53cc\u51fb\u6216 Enter \u7ed3\u675f
@@ -169,7 +169,7 @@ class UsageGuideDialog(QDialog):
   \u5904\u7406\u8fdb\u5ea6\u5728\u4e3b\u9875\u5e95\u90e8\u72b6\u6001\u680f\u53f3\u4fa7\u663e\u793a\uff0c\u5b8c\u6210\u540e\u4f1a\u663e\u793a\u7ed3\u679c\u63d0\u793a\u3002
 
 \u6570\u636e\u5408\u6210 (Ctrl+D+S)
-  \u9009\u62e9\u5e27\u56fe\u6570\u636e\u76ee\u5f55\u3001\u5408\u6210\u8f93\u51fa\u76ee\u5f55\u53ca COCO / YOLO / Pascal VOC \u683c\u5f0f\u3002
+  \u9009\u62e9\u5e27\u56fe\u6570\u636e\u76ee\u5f55\u3001\u5408\u6210\u8f93\u51fa\u76ee\u5f55\u53ca YOLO / Pascal VOC / COCO \u683c\u5f0f\u3002
   \u5efa\u8bae\u8f93\u51fa\u76ee\u5f55\u4e3a\u7a7a\uff0c\u907f\u514d\u8986\u76d6\u73b0\u6709\u6570\u636e\u3002
   \u5408\u6210\u8fdb\u5ea6\u4f1a\u663e\u793a\u5728\u4e3b\u9875\u5e95\u90e8\u72b6\u6001\u680f\u53f3\u4fa7\uff0c\u5b8c\u6210\u540e\u663e\u793a\u6210\u529f\u3001\u5931\u8d25\u548c\u8df3\u8fc7\u6570\u91cf\u3002
 
@@ -270,7 +270,7 @@ Steps
      · An existing dataset: images AND annotations imported
      · Empty: creates the structure; add images later
   5. Choose the target format:
-     YOLO Detection / Segmentation / Pose / OBB, VOC, COCO
+     YOLO Detection / Segmentation / Pose / OBB, Pascal VOC, COCO
   6. Optional class names; keypoint count for pose
   7. Click "Create"
 
@@ -296,17 +296,17 @@ Statistics (Ctrl+T+S)
   Label counts, per-class distribution, progress
 
 Conversion (Ctrl+D+C)
-  Batch convert between YOLO / VOC / COCO
+  Batch convert between YOLO / Pascal VOC / COCO
 
 Extract video frames (Ctrl+V+F)
   Recursively scan a video folder and save sampled frames at the selected FPS. Progress appears at the bottom-right of the main status bar; a completion summary is shown when done.
 
 Synthesize dataset (Ctrl+D+S)
-  Build a COCO, YOLO, or Pascal VOC dataset from a frame folder; output must be empty. Progress appears at the bottom-right of the main status bar, followed by a readable success/failure/skip summary.
+  Build a YOLO, Pascal VOC, or COCO dataset from a frame folder; output must be empty. Progress appears at the bottom-right of the main status bar, followed by a readable success/failure/skip summary.
 
 Auto labeling (Ctrl+A+L)
   Requires an ONNX model in Application Settings; official
-  YOLO detection/Pose models are supported; can be stopped
+  YOLO Detection / Pose models are supported; can be stopped
 
 Application settings (Ctrl+A+S)
   Annotation method, line/text size, save mode, language

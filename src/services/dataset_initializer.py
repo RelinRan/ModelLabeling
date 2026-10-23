@@ -225,7 +225,7 @@ class DatasetInitializer:
     @staticmethod
     def structure_summary(task_name: str) -> str:
         return {
-            "yolo_detection": "labels/ + data.yaml + classes.txt（YOLO 检测）",
+            "yolo_detection": "labels/ + data.yaml + classes.txt（YOLO Detection）",
             "yolo_segmentation": "labels/ + data.yaml（task: segment）",
             "yolo_pose": "labels/ + data.yaml（task: pose + kpt_shape）",
             "yolo_obb": "labels/ + data.yaml（task: obb）",

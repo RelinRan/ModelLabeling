@@ -306,7 +306,7 @@ class MainWindow(QMainWindow):
         progress_layout = QHBoxLayout(); progress_layout.setContentsMargins(0, 0, 0, 0); progress_layout.setSpacing(8)
         progress_layout.addWidget(self.status_progress_current); progress_layout.addWidget(self.status_progress, 1); progress_layout.addWidget(self.status_progress_percent)
         self.status_progress_host = QWidget(); self.status_progress_host.setLayout(progress_layout); self.status_progress_host.setMinimumWidth(190)
-        self.status_format = QLabel("格式: YOLO")
+        self.status_format = QLabel("格式: --")
         self.status_selected_label = QLabel("已选标签: -")
         self.status_file = QLabel("文件: -")
         self.status_position = QLabel("图片: -/-")

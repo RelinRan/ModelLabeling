@@ -9,6 +9,8 @@ from PySide6.QtWidgets import (
     QPushButton, QVBoxLayout, QWidget,
 )
 
+from src.services.display_names import format_options, task_options
+
 from .common_dialogs import AppDialog
 from .form_layout import (
     configure_buttons, configure_form, set_confirm_button,
@@ -141,16 +143,16 @@ class DatasetSynthesisDialog(_DirectoryDialog):
         self.source_dir = QLineEdit()
         self.output_dir = QLineEdit()
         self.format = QComboBox()
-        for label, value in (("COCO", "coco"), ("YOLO", "yolo"), ("Pascal VOC", "voc")):
+        for label, value in format_options():
             self.format.addItem(label, value)
         self.task = QComboBox()
         english = getattr(getattr(parent, "settings", None), "language", "zh_CN") == "en_US"
-        self.task.addItem("Follow source dataset" if english else "跟随源数据集", None)
-        for label, value in (("YOLO Detection", "yolo_detection"), ("YOLO Segmentation", "yolo_segmentation"),
-                             ("YOLO Pose", "yolo_pose"), ("YOLO OBB", "yolo_obb")):
-            self.task.addItem(label, value)
-        self.task.setVisible(False)
-        self.format.currentIndexChanged.connect(lambda: self.task.setVisible(self.format.currentData() == "yolo"))
+        # The task choices belong to the selected format: COCO and Pascal VOC
+        # have exactly one task (the format itself), YOLO has its four tasks.
+        # There is no "follow source dataset" escape hatch: a synthesis always
+        # writes an explicit task.
+        self.format.currentIndexChanged.connect(self._refresh_task_options)
+        self._refresh_task_options()
         layout = QVBoxLayout(self)
         set_content_margins(layout)
         layout.setSpacing(10)
@@ -163,6 +165,16 @@ class DatasetSynthesisDialog(_DirectoryDialog):
         card.addLayout(form)
         self._load_last_paths("synthesis", self.source_dir, self.output_dir)
         self._buttons(layout)
+
+    def _refresh_task_options(self) -> None:
+        current = self.task.currentData()
+        self.task.blockSignals(True)
+        self.task.clear()
+        for label, value in task_options(self.format.currentData()):
+            self.task.addItem(label, value)
+        index = self.task.findData(current)
+        self.task.setCurrentIndex(index if index >= 0 else 0)
+        self.task.blockSignals(False)
 
     def accept(self) -> None:
         source = Path(self.source_dir.text().strip())
@@ -179,7 +191,7 @@ class DatasetSynthesisDialog(_DirectoryDialog):
             "source_dir": source,
             "output_dir": Path(output_text),
             "format_name": self.format.currentData(),
-            "output_task": self.task.currentData() if self.format.currentData() == "yolo" else None,
+            "output_task": self.task.currentData(),
         }
         super().accept()
 
