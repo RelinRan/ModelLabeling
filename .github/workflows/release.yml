@@ -1,8 +1,7 @@
-name: release
+name: Desktop clients
 
-# Builds desktop clients for Windows / Linux and publishes them as a
-# GitHub Release. Push a version tag (v1.2.0) to ship; a manual run only
-# builds and uploads the artifacts to the workflow run.
+# Push a version tag (for example v1.2.0) to publish both desktop clients.
+# workflow_dispatch builds downloadable artifacts without creating a release.
 on:
   push:
     tags: ["v*"]
@@ -10,6 +9,10 @@ on:
 
 permissions:
   contents: write
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   test:
@@ -64,7 +67,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgl1 libegl1 libxkbcommon0 libxcb-cursor0
+          sudo apt-get install -y libgl1 libegl1 libxkbcommon0 libxkbcommon-x11-0 libdbus-1-3 libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-xinerama0 libxcb-xkb1
       - run: pip install -r requirements.txt pyinstaller
       - name: Build with PyInstaller
         shell: bash
@@ -86,13 +89,16 @@ jobs:
           cp -r icons staging/
           cp README.md staging/
           ASSET="ModelLabeling-${VERSION}-${{ matrix.platform }}"
-          # python's zipfile works on every runner (no external zip needed)
-          python -c "import shutil, sys; shutil.make_archive(sys.argv[1], 'zip', 'staging')" "${ASSET}"
-          echo "ASSET=${ASSET}.zip" >> "$GITHUB_ENV"
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            tar -C staging -czf "${ASSET}.tar.gz" .
+          else
+            python -c "import shutil, sys; shutil.make_archive(sys.argv[1], 'zip', 'staging')" "${ASSET}"
+          fi
+          echo "ASSET=${ASSET}" >> "$GITHUB_ENV"
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ASSET }}
-          path: ${{ env.ASSET }}
+          path: ${{ env.ASSET }}*
           if-no-files-found: error
 
   publish:
@@ -108,5 +114,8 @@ jobs:
       - name: Attach to the GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/*
+          files: |
+            artifacts/ModelLabeling-*-windows-x64.zip
+            artifacts/ModelLabeling-*-linux-x64.tar.gz
           generate_release_notes: true
+          fail_on_unmatched_files: true

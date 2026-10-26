@@ -7,6 +7,12 @@ A Windows-first Python/PySide6 desktop annotation workbench for YOLO / Pascal VO
 - Version: v1.0.1
 - Author: RelinRan · [GitHub](https://github.com/RelinRan) · relinran@foxmail.com
 
+## Download desktop clients
+
+Windows x64 and Linux x64 clients are built automatically and attached to each [GitHub Release](https://github.com/RelinRan/ModelLabeling/releases). Download the Windows ZIP or Linux `.tar.gz` asset for your platform, extract it, then run `ModelLabeling.exe` on Windows or `./ModelLabeling` on Linux.
+
+To publish a release, push a version tag such as `v1.2.0`. The workflow runs the test suite, builds both platforms, and publishes both assets. Running the workflow manually builds downloadable artifacts without publishing a Release.
+
 ---
 
 ## Contents
