@@ -20,6 +20,7 @@ tmp/
 recovered/
 test_shots/
 _*.py
+!__init__.py
 !test_annotation_flow.py
 !icons/*.png
 output/
