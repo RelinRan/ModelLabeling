@@ -694,6 +694,11 @@ class MainWindow(QMainWindow):
             # into the wrong annotation file. Keep the canonical dataset state
             # intact and only replace the list model.
             self.image_panel.set_paged_records(page, filtered_total, loader)
+            # The page is loaded but was not delivered as "fetched" rows, and
+            # the scan's first batch follows directory order while the index is
+            # sorted. Without this, a record visible on the page can be absent
+            # from the canonical state on filesystems whose walk order differs.
+            self._image_records_fetched(page)
             self.image_panel.select_record(self.state.current_image)
             return
         self.image_panel.set_records(self.image_service.filter_records(self.state.images, self.image_panel.search.text(), self.image_panel.selected_status(), self.image_panel.selected_label()))

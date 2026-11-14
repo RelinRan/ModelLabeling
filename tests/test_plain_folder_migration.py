@@ -67,13 +67,27 @@ def test_first_save_migrates_a_plain_folder_and_saves_a_standard_seg_row(tmp_pat
         assert _pump(app, lambda: window._dataset_scan_completed and window._dataset_thread is None)
         assert _pump(app, lambda: window.state.current_image is not None and window.canvas.image_item is not None)
 
+        # The metadata/annotation load runs in its own thread and reloads the
+        # canvas when it lands; drawing before it finishes would be wiped.
+        assert _pump(
+            app,
+            lambda: window.state.current_image is not None
+            and window.state.current_image.metadata_loaded
+            and window._annotation_thread is None,
+        ), "image metadata did not finish loading"
         window.settings.dataset_task = "yolo_segmentation"
         window._apply_annotation_capabilities()
         window._preset_selected("person")
         canvas = window.canvas
+        window.activateWindow()
+        canvas.setFocus()
         canvas.set_mode(ShapeType.POLYGON)
         canvas._enable_draw_mode()
         app.processEvents()
+        assert canvas.mode == ShapeType.POLYGON, (
+            canvas.mode, sorted(shape.value for shape in canvas.enabled_shapes)
+        )
+        assert canvas.draw_enabled
 
         def point(x, y):
             return canvas.mapFromScene(QPointF(x, y))
@@ -85,6 +99,7 @@ def test_first_save_migrates_a_plain_folder_and_saves_a_standard_seg_row(tmp_pat
         )
         for target in mapped:
             QTest.mouseClick(canvas.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, target)
+        assert len(canvas.polygon_points) == 3, (len(canvas.polygon_points), canvas.mode, mapped)
         QTest.keyClick(canvas, Qt.Key.Key_Return)
         app.processEvents()
         assert len(canvas.annotations) == 1, [
