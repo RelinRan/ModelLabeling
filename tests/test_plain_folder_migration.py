@@ -78,17 +78,25 @@ def test_first_save_migrates_a_plain_folder_and_saves_a_standard_seg_row(tmp_pat
         def point(x, y):
             return canvas.mapFromScene(QPointF(x, y))
 
-        for x, y in ((100, 100), (300, 100), (200, 250)):
-            QTest.mouseClick(canvas.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point(x, y))
+        clicks = [(100, 100), (300, 100), (200, 250)]
+        mapped = [point(x, y) for x, y in clicks]
+        assert all(canvas.viewport().rect().contains(p) for p in mapped), (
+            canvas.viewport().size(), canvas.size(), mapped,
+        )
+        for target in mapped:
+            QTest.mouseClick(canvas.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, target)
         QTest.keyClick(canvas, Qt.Key.Key_Return)
         app.processEvents()
-        assert len(canvas.annotations) == 1
+        assert len(canvas.annotations) == 1, [
+            (a.shape_type.value, len(a.points)) for a in canvas.annotations
+        ]
 
         images_dir = root / "images"
         assert _pump(app, lambda: (images_dir / "a.jpg").exists() and (images_dir / "b.jpg").exists()), \
             "images were not moved into images/"
         assert not (root / "a.jpg").exists() and not (root / "b.jpg").exists()
         assert _pump(app, lambda: window._save_thread is None), "annotation save did not finish"
+        assert window._last_save_error is None, window._last_save_error
         # The layout migration triggers one reload so the session/index follow images/.
         assert _pump(
             app,
@@ -104,11 +112,11 @@ def test_first_save_migrates_a_plain_folder_and_saves_a_standard_seg_row(tmp_pat
         labels = sorted((root / "labels").glob("*.txt"))
         assert labels, "no label file was written"
         saved = [label for label in labels if label.read_text(encoding="utf-8").strip()]
-        assert len(saved) == 1
+        assert len(saved) == 1, [(p.name, p.read_text(encoding="utf-8")) for p in labels]
         row = saved[0].read_text(encoding="utf-8").split()
         assert len(row) == 7, row  # class + three normalized points
-        assert row[0] == "0"
-        assert all(0.0 <= float(value) <= 1.0 for value in row[1:])
+        assert row[0] == "0", row
+        assert all(0.0 <= float(value) <= 1.0 for value in row[1:]), row
         # The trainer's own rule now maps the image to the saved label.
         assert _ultralytics_label_path(images_dir / "a.jpg") == saved[0].resolve()
 

@@ -421,13 +421,22 @@ def test_generated_paged_dataset_edit_filter_reset_reload_keeps_file_identity(tm
     cache_files = []
     try:
         _open(window, app, source)
-        assert window.dataset_total_images == 103
+        # The independent file counter and the index writer finish in either
+        # order on a slow runner; wait for the final total instead of assuming
+        # the scan-finished slot already saw both.
+        assert _wait(app, lambda: window.dataset_total_images == 103), (
+            window.dataset_total_images,
+            window.dataset_index_repository.count() if window.dataset_index_repository else None,
+        )
         assert len(window.image_panel.records) == 100
         assert window.image_panel.list_model.canFetchMore()
 
         window.image_panel.list_model.fetchMore()
         assert _wait(app, lambda: len(window.image_panel.records) == 103)
-        assert len({record.path for record in window.state.images}) == 103
+        assert _wait(
+            app,
+            lambda: len({record.path for record in window.state.images}) == 103,
+        ), (len(window.state.images), len(window.image_panel.records))
 
         _select(window, app, "img_0102.jpg")
         window.canvas.annotation_items[0].setSelected(True)

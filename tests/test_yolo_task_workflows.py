@@ -88,8 +88,10 @@ def test_load_edit_save_convert_synthesize_reopen(tmp_path, task):
         annotation = restored.annotations[0]
         assert annotation.label == original.label
         assert annotation.shape_type == original.shape_type
-        assert [(p.x(), p.y()) for p in annotation.points] == pytest.approx(
-            [(p.x(), p.y()) for p in original.points])
+        # Flattened: pytest.approx does not accept nested sequences on every
+        # supported pytest version (CI installs the newest).
+        assert [c for p in annotation.points for c in (p.x(), p.y())] == pytest.approx(
+            [c for p in original.points for c in (p.x(), p.y())])
         assert [k.visibility for k in annotation.keypoints] == [k.visibility for k in original.keypoints]
 
 

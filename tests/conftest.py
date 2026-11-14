@@ -207,20 +207,32 @@ def _confine_deletions_to_tmp(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def locked_file():
+def locked_file(monkeypatch):
     """Hold a file open the way another program would.
 
     On Windows an open handle without ``FILE_SHARE_DELETE`` makes the unlink
     fail with a sharing violation, which is the real shape of this failure --
-    a viewer or a trainer holding the image -- rather than a stubbed one. The
-    file stays readable, so the backup copy beside it still succeeds and the
-    test exercises the delete step specifically.
+    a viewer or a trainer holding the image -- rather than a stubbed one. POSIX
+    happily unlinks an open file, so there the delete primitive is patched to
+    raise instead; the path still stays readable, so the backup copy beside it
+    succeeds and the test exercises the delete step specifically.
     """
+    from src.services.cleanup import fixer
+
     @contextmanager
     def lock(path):
+        path = Path(path)
         handle = open(path, "rb")
+        original_unlink = fixer._unlink
+        if os.name != "nt":
+            def locked_unlink(target):
+                if Path(target).resolve() == path.resolve():
+                    raise PermissionError(f"file is in use: {path}")
+                return original_unlink(target)
+
+            monkeypatch.setattr(fixer, "_unlink", locked_unlink)
         try:
-            yield Path(path)
+            yield path
         finally:
             handle.close()
 

@@ -33,8 +33,12 @@ jobs:
           code=0
           python -m pytest tests -q 2>&1 | tee pytest.log || code=$?
           if [ "$code" -ne 0 ]; then
-            # surface failures as public annotations (logs need a login)
-            { grep -E "^(FAILED|ERROR)" pytest.log || tail -40 pytest.log; } | head -25 | while IFS= read -r line; do
+            # surface failures as public annotations (logs need a login);
+            # include the traceback tail so the failing assertion is visible
+            { grep -E "^(FAILED|ERROR)" pytest.log || true
+              echo "--- failure context ---"
+              tail -120 pytest.log
+            } | head -140 | while IFS= read -r line; do
               echo "::error::${line}"
             done
           fi
