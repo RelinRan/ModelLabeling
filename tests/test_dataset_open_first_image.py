@@ -142,3 +142,62 @@ def test_switching_datasets_clears_the_preview(tmp_path, monkeypatch):
         window.close()
         _drop_index_cache(first)
         _drop_index_cache(second)
+
+
+def test_cached_dataset_shows_indexed_first_page_before_rescan_finishes(tmp_path, monkeypatch):
+    import threading
+    from src.services.dataset_index import DatasetIndexRepository
+    from src.services.workers import DatasetScanWorker
+
+    app = QApplication.instance() or QApplication([])
+    root = tmp_path / "cached-yolo"
+    image_dir, labels_dir = root / "images", root / "labels"
+    image_dir.mkdir(parents=True)
+    labels_dir.mkdir()
+    for index in range(120):
+        Image.new("RGB", (8, 8), (index % 255, 10, 10)).save(image_dir / f"{index:03d}.jpg", "JPEG")
+    settings_ini = tmp_path / "settings.ini"
+    monkeypatch.setattr(
+        main_window_module, "QSettings",
+        lambda *a, **k: QSettings(str(settings_ini), QSettings.Format.IniFormat),
+    )
+    monkeypatch.setattr("src.services.label_group_store.DEFAULT_LABEL_GROUP_DB", tmp_path / "label_groups.sqlite3")
+    monkeypatch.setattr("src.services.keypoint_group_store.DEFAULT_KEYPOINT_GROUP_DB", tmp_path / "keypoint_groups.sqlite3")
+    repository = DatasetIndexRepository(root, image_dir, labels_dir, "yolo")
+    rows = [item for batch in repository.scan_paths(batch_size=1000) for item in batch]
+    repository.upsert_batch(rows)
+    repository.prune_missing()
+    repository.set_complete(True)
+
+    settings = __import__("src.models.project", fromlist=["ProjectSettings"]).ProjectSettings(
+        image_dir=image_dir, annotation_dir=labels_dir, annotation_format="yolo",
+        dataset_task="yolo_detection",
+    )
+    worker = DatasetScanWorker(image_dir, labels_dir, settings, root, "session")
+    scan_entered, release_scan = threading.Event(), threading.Event()
+    original_scan_paths = DatasetIndexRepository.scan_paths
+
+    def blocked_scan_paths(self, *args, **kwargs):
+        scan_entered.set()
+        assert release_scan.wait(10)
+        yield from original_scan_paths(self, *args, **kwargs)
+
+    monkeypatch.setattr(DatasetIndexRepository, "scan_paths", blocked_scan_paths)
+    partials = []
+    worker.partial.connect(partials.append)
+    worker_thread = threading.Thread(target=worker.run, daemon=True)
+    worker_thread.start()
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not partials:
+            app.processEvents()
+            time.sleep(0.005)
+        assert scan_entered.is_set()
+        assert partials
+        assert len(partials[0].records) == 100
+        assert worker_thread.is_alive()
+    finally:
+        release_scan.set()
+        worker_thread.join(timeout=15)
+        _drop_index_cache(root)
+    assert not worker_thread.is_alive()

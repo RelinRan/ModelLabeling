@@ -37,8 +37,13 @@ class DatasetStatisticsWorker(QObject):
 
     def run(self) -> None:
         try:
-            service = AnnotationService()
             repository = DatasetIndexRepository(self.image_dir.parent.resolve(), self.image_dir, self.annotation_dir, self.settings.annotation_format)
+            if repository.is_complete():
+                snapshot = repository.statistics_snapshot()
+                self.progress.emit(snapshot["total_images"], snapshot["total_images"], snapshot)
+                self.finished.emit(snapshot)
+                return
+            service = AnnotationService()
             if self.records is None:
                 total = repository.count()
                 pages = repository.iter_pages(500)
@@ -115,11 +120,46 @@ class DatasetStatisticsWorker(QObject):
             return []
 
 
+from .dataset_detector import DatasetDetector
+
+
+class DatasetDetectionWorker(QObject):
+    finished = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, root: Path) -> None:
+        super().__init__()
+        self.root = Path(root)
+
+    def run(self) -> None:
+        try:
+            self.finished.emit(DatasetDetector.detect(self.root))
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class CocoCheckpointWorker(QObject):
+    finished = Signal(str)
+
+    def __init__(self, annotation_dir: Path) -> None:
+        super().__init__()
+        self.annotation_dir = Path(annotation_dir)
+
+    def run(self) -> None:
+        try:
+            AnnotationService.export_coco(self.annotation_dir)
+            self.finished.emit("")
+        except Exception as exc:
+            self.finished.emit(str(exc))
+
+
 class DatasetScanWorker(QObject):
     # Keep worker batches aligned with the responsive 500-row UI preload.
     # Indexing and annotation persistence are path-based and independent;
     # only progress/partial signals cross back to the UI thread.
-    INDEX_BATCH_SIZE = 100
+    INDEX_BATCH_SIZE = 1000
+    FIRST_BATCH_SIZE = 100
+    CACHED_PRELOAD_SIZE = 100
     PROGRESS_STEP = 100
 
     progress = Signal(int, int)
@@ -141,11 +181,24 @@ class DatasetScanWorker(QObject):
         try:
             repository = DatasetIndexRepository(self.dataset_root, self.image_dir, self.annotation_dir, self.settings.annotation_format)
             presets = self._discover_presets(100)
+            first = False
             if repository.is_complete():
-                self.partial.emit(DatasetScanResult([], presets, repository.count(), True, self.session_id))
+                cached_total = repository.count()
+                cached_page = repository.get_page(0, self.CACHED_PRELOAD_SIZE)
+                if cached_page:
+                    self.partial.emit(DatasetScanResult(
+                        [self._record(item) for item in cached_page],
+                        presets, cached_total, True, self.session_id,
+                    ))
+                    first = True
+                else:
+                    self.partial.emit(DatasetScanResult([], presets, cached_total, True, self.session_id))
             repository.set_complete(False)
-            indexed = 0; first = False
-            for batch in repository.scan_paths(lambda: self.cancelled, self.INDEX_BATCH_SIZE, [p.name for p in presets]):
+            indexed = 0
+            for batch in repository.scan_paths(
+                lambda: self.cancelled, self.INDEX_BATCH_SIZE,
+                [p.name for p in presets], self.FIRST_BATCH_SIZE,
+            ):
                 repository.upsert_batch(batch)
                 if not first:
                     self.partial.emit(DatasetScanResult([self._record(item) for item in batch], presets, 0, True, self.session_id)); first = True
@@ -166,13 +219,23 @@ class DatasetScanWorker(QObject):
             # declaring the scan complete. A second pass repairs a transient
             # short page instead of exposing a count of N with only N-1 rows.
             if self.total_count and repository.count() != self.total_count:
-                for batch in repository.scan_paths(lambda: self.cancelled, self.INDEX_BATCH_SIZE, [p.name for p in presets]):
+                for batch in repository.scan_paths(
+                    lambda: self.cancelled, self.INDEX_BATCH_SIZE, [p.name for p in presets],
+                    self.FIRST_BATCH_SIZE,
+                ):
                     if self.cancelled:
                         return
                     repository.upsert_batch(batch)
             repository.prune_missing(lambda: self.cancelled); total = repository.count(); repository.set_complete(True)
             self.progress.emit(total, total); self.finished.emit(DatasetScanResult([], presets, total, True, self.session_id))
         except Exception as exc:
+            try:
+                DatasetIndexRepository(
+                    self.dataset_root, self.image_dir, self.annotation_dir,
+                    self.settings.annotation_format,
+                ).set_complete(False)
+            except Exception:
+                pass
             self.failed.emit(str(exc))
 
     @staticmethod
@@ -441,9 +504,15 @@ class DatasetAnnotationSaveWorker(QObject):
     finished = Signal(str)
 
     def __init__(self, image_path: Path, image_dir: Path, annotation_dir: Path,
-                 annotations: list[Annotation], settings: ProjectSettings) -> None:
+                 annotations: list[Annotation], settings: ProjectSettings,
+                 dataset_root: Path | None = None) -> None:
         super().__init__()
         self.image_path, self.image_dir, self.annotation_dir = Path(image_path), Path(image_dir), Path(annotation_dir)
+        # Keep classes.txt/data.yaml inside the open dataset even when a
+        # data.yaml exists in some ancestor directory (the metadata search
+        # walks up three levels, which is useful for detection but must not
+        # decide where this dataset's metadata is written).
+        self.dataset_root = Path(dataset_root) if dataset_root else None
         self.annotations = [Annotation.from_dict(item.to_dict()) for item in annotations]
         self.settings = ProjectSettings.from_dict(settings.to_dict())
 
@@ -466,7 +535,10 @@ class DatasetAnnotationSaveWorker(QObject):
                 from .yolo_metadata import find_yolo_yaml, load_yolo_metadata
                 from .conversion_service import ConversionService
                 yaml_path = find_yolo_yaml(self.annotation_dir)
-                root = yaml_path.parent if yaml_path else self.image_dir.parent
+                if self.dataset_root is not None:
+                    root = self.dataset_root
+                else:
+                    root = yaml_path.parent if yaml_path else self.image_dir.parent
                 classes_path = root / "classes.txt"
                 by_id = {preset.class_id: preset.name for preset in self.settings.label_presets}
                 AnnotationService._atomic_write_text(

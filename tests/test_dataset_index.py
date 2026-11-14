@@ -132,3 +132,74 @@ def test_empty_voc_document_is_unlabeled(tmp_path):
     records = [item for batch in repository.scan_paths(batch_size=10) for item in batch]
 
     assert records[0].annotation_status == "missing"
+
+
+def test_batch_upsert_replaces_labels_with_empty_for_large_batches(tmp_path):
+    image_dir = tmp_path / "images"
+    labels_dir = tmp_path / "labels"
+    images = []
+    for index in range(950):
+        image = image_dir / f"{index:04d}.jpg"
+        _image(image)
+        images.append(image)
+    repository = DatasetIndexRepository(tmp_path, image_dir, labels_dir, "yolo")
+    records = [item for batch in repository.scan_paths(batch_size=1000) for item in batch]
+    first_write = [
+        type(record)(**{**record.__dict__, "annotation_labels": ("person",)})
+        for record in records
+    ]
+    repository.upsert_batch(first_write)
+    assert repository.count(label="person") == 950
+
+    second_write = [
+        type(record)(**{**record.__dict__, "annotation_labels": ("vehicle",) if record.path == images[0] else ()})
+        for record in records
+    ]
+    repository.upsert_batch(second_write)
+    assert repository.count(label="person") == 0
+    assert repository.count(label="vehicle") == 1
+
+
+def test_statistics_snapshot_aggregates_index_and_reflects_annotation_edits(tmp_path):
+    image_dir = tmp_path / "images"
+    labels_dir = tmp_path / "labels"
+    images = [image_dir / f"{index}.jpg" for index in range(3)]
+    for image in images:
+        _image(image)
+    repository = DatasetIndexRepository(tmp_path, image_dir, labels_dir, "yolo")
+    repository.upsert_batch([item for batch in repository.scan_paths(batch_size=10) for item in batch])
+    repository.update_annotation(images[0], labels_dir / "0.txt", ["person", "vehicle"])
+    repository.update_annotation(images[1], labels_dir / "1.txt", ["person"])
+
+    snapshot = repository.statistics_snapshot()
+    assert snapshot["total_images"] == 3
+    assert snapshot["labeled_images"] == 2
+    assert round(snapshot["percentage"], 4) == round(200 / 3, 4)
+    assert snapshot["total_labels"] == 3
+    assert snapshot["label_counts"] == {"person": 2, "vehicle": 1}
+    repository.update_annotation(images[0], labels_dir / "0.txt", ["vehicle"])
+    snapshot = repository.statistics_snapshot()
+    assert snapshot["labeled_images"] == 2
+    assert snapshot["total_labels"] == 2
+    assert snapshot["label_counts"] == {"person": 1, "vehicle": 1}
+
+
+def test_scanned_page_and_snapshot_exclude_stale_cached_rows(tmp_path):
+    image_dir = tmp_path / "images"
+    labels_dir = tmp_path / "labels"
+    first, stale = image_dir / "first.jpg", image_dir / "stale.jpg"
+    _image(first)
+    _image(stale)
+    repository = DatasetIndexRepository(tmp_path, image_dir, labels_dir, "yolo")
+    old_records = [item for batch in repository.scan_paths(batch_size=10) for item in batch]
+    repository.upsert_batch(old_records)
+    repository.set_complete(True)
+    stale.unlink()
+
+    repository.set_complete(False)
+    fresh_records = [item for batch in repository.scan_paths(batch_size=10, first_batch_size=1) for item in batch]
+    repository.upsert_batch(fresh_records)
+
+    assert repository.scanned_count() == 1
+    assert [item.path for item in repository.get_scanned_page(0, 10)] == [first]
+    assert repository.statistics_snapshot(scanned_only=True)["total_images"] == 1

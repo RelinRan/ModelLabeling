@@ -32,7 +32,7 @@ Windows 优先的 Python/PySide6 桌面图像标注工作台。面向 YOLO / Pas
 | 标注方式 | 矩形、正方形、多边形、旋转框、关键点位（按当前数据集能力自动过滤） |
 | 点位类型 | 预定义点数、点位名称与标注标签 (Ctrl+K+G)；内置「姿态」(17 点 COCO 人体，标签 pose) 与「汽车」(标签 car)；画布上一键套用整套 schema |
 | 数据集初始化 | 新建向导：工作空间 + 名称 + 参数，图片素材复制进来（可导入已有数据集标注） |
-| 兼容性 | 完全无标注的数据集（空 labels/、无 Annotations/、纯图片文件夹）可直接打开 |
+| 兼容性 | 完全无标注的数据集（空 labels/、无 Annotations/、纯图片文件夹）可直接打开；纯图片文件夹在首次保存时自动整理为标准的 images/ + labels/ 结构 |
 | 自动标注 | YOLO Detection / Segmentation / Pose / OBB ONNX 解码，后台可停止 |
 | 数据转换 | YOLO / Pascal VOC / COCO 批量互转，保留目录层级与 data.yaml 类名 |
 | 编辑体验 | 连续绘制、撤销/重做、拖动/缩放/旋转、关键点可见性（COCO 0/1/2 规范） |
@@ -223,6 +223,7 @@ src/
 │  └─ project.py           ProjectSettings / ProjectState / ImageRecord
 ├─ services/               服务层（无 UI 依赖）
 │  ├─ dataset_detector.py  目录结构与任务识别（含纯图片回退、无标注支持）
+│  ├─ yolo_layout.py       纯图片文件夹 → 标准 images/ + labels/ 结构转换
 │  ├─ dataset_initializer.py  新建向导的原地初始化
 │  ├─ dataset_index.py     数据集级 SQLite 路径索引（分页/筛选/定位）
 │  ├─ dataset_session.py   当前数据集的权威上下文
@@ -278,6 +279,9 @@ python -m pytest tests -q
 
 **打开文件夹提示"unsupported dataset format"？**
 确认文件夹内有图片；或用新建向导 (Ctrl+N) 初始化为标准结构。
+
+**直接打开纯图片文件夹后，图片为什么被移动了？**
+首次保存时会询问是否整理为标准 YOLO 结构：图片移动到 `images/`、标注写入 `labels/`，并在同一文件夹生成 `classes.txt` 与 `data.yaml`。YOLO 通过把图片路径中最后一个 `/images/` 替换为 `/labels/` 来定位标注；图片直接在文件夹根目录时，同级 `labels/` 中的标注不会被训练器读到。整个过程不复制图片；选择取消则不保存，也不会改动任何文件。
 
 **YOLO 数据集没有 classes.txt 会怎样？**
 可以打开和标注；首次保存时自动创建，并用当前标签补全类别。

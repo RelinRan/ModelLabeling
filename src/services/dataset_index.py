@@ -86,6 +86,9 @@ class DatasetIndexRepository:
                     PRIMARY KEY(image_id, label),
                     FOREIGN KEY(image_id) REFERENCES images(id) ON DELETE CASCADE
                 );
+                CREATE TABLE IF NOT EXISTS scan_seen_paths (
+                    path TEXT PRIMARY KEY
+                );
                 CREATE INDEX IF NOT EXISTS idx_images_sort ON images(sort_key, id);
                 CREATE INDEX IF NOT EXISTS idx_images_name ON images(file_name);
                 CREATE INDEX IF NOT EXISTS idx_images_annotation_status ON images(annotation_status);
@@ -136,8 +139,32 @@ class DatasetIndexRepository:
             value = connection.execute("SELECT value FROM dataset_meta WHERE key='complete'").fetchone()
             return bool(value and value[0] == "1")
 
+    def scanned_count(self, query: str = "", status: str = "all", label: str = "") -> int:
+        where, parameters = self._scanned_filter_clause(query, status, label)
+        with self._connect() as connection:
+            return int(connection.execute(f"SELECT COUNT(*) FROM images{where}", parameters).fetchone()[0])
+
+    def get_scanned_page(
+        self, offset: int, limit: int, query: str = "", status: str = "all", label: str = "",
+    ) -> list[IndexedImage]:
+        where, parameters = self._scanned_filter_clause(query, status, label)
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT id,path,relative_path,file_name,file_size,mtime_ns,width,height,annotation_path,annotation_status,annotation_size,annotation_mtime_ns "
+                f"FROM images{where} ORDER BY sort_key,id LIMIT ? OFFSET ?",
+                [*parameters, int(limit), int(offset)],
+            )
+            return [self._row_to_image(row) for row in rows]
+
+    @classmethod
+    def _scanned_filter_clause(cls, query: str, status: str, label: str) -> tuple[str, list[object]]:
+        where, parameters = cls._filter_clause(query, status, label)
+        condition = "EXISTS (SELECT 1 FROM scan_seen_paths seen WHERE seen.path=images.path)"
+        return (f"{where} AND {condition}" if where else f" WHERE {condition}", parameters)
+
     def set_complete(self, value: bool) -> None:
         with self._connect() as connection:
+            connection.execute("DELETE FROM scan_seen_paths")
             connection.execute(
                 "INSERT INTO dataset_meta(key,value) VALUES('complete',?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -182,6 +209,36 @@ class DatasetIndexRepository:
                 "INSERT INTO dataset_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 [("stats_signature", signature), ("stats_payload", payload)],
             )
+
+    def statistics_snapshot(self, scanned_only: bool = False) -> dict:
+        """Aggregate indexed annotation labels without reopening annotation files."""
+        condition = (
+            " WHERE EXISTS (SELECT 1 FROM scan_seen_paths seen WHERE seen.path=images.path)"
+            if scanned_only else ""
+        )
+        with self._connect() as connection:
+            total = int(connection.execute(f"SELECT COUNT(*) FROM images{condition}").fetchone()[0])
+            labeled = int(connection.execute(
+                "SELECT COUNT(*) FROM images" + condition +
+                (" AND " if condition else " WHERE ") +
+                "annotation_status='present'"
+            ).fetchone()[0])
+            label_rows = connection.execute(
+                "SELECT il.label,COUNT(*) FROM image_labels il JOIN images i ON i.id=il.image_id" +
+                condition.replace("images.", "i.") +
+                " GROUP BY il.label ORDER BY il.label COLLATE NOCASE"
+            ).fetchall()
+            total_labels = int(connection.execute(
+                "SELECT COUNT(*) FROM image_labels il JOIN images i ON i.id=il.image_id" +
+                condition.replace("images.", "i.")
+            ).fetchone()[0])
+        return {
+            "total_images": total,
+            "labeled_images": labeled,
+            "percentage": labeled / total * 100.0 if total else 0.0,
+            "total_labels": total_labels,
+            "label_counts": {str(name): int(count) for name, count in label_rows},
+        }
 
     def get_page(self, offset: int, limit: int, query: str = "", status: str = "all", label: str = "") -> list[IndexedImage]:
         where, parameters = self._filter_clause(query, status, label)
@@ -243,21 +300,46 @@ class DatasetIndexRepository:
         if not values:
             return
         with self._connect() as connection:
-            connection.executemany(
-                "INSERT INTO images(id,path,relative_path,file_name,file_size,mtime_ns,width,height,annotation_path,annotation_status,sort_key,annotation_size,annotation_mtime_ns) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET "
-                "relative_path=excluded.relative_path,file_name=excluded.file_name,file_size=excluded.file_size,mtime_ns=excluded.mtime_ns,"
-                "annotation_path=excluded.annotation_path,annotation_status=excluded.annotation_status,sort_key=excluded.sort_key,"
-                "annotation_size=excluded.annotation_size,annotation_mtime_ns=excluded.annotation_mtime_ns",
-                values,
-            )
-            for item in batch:
-                image_id = connection.execute("SELECT id FROM images WHERE path=?", (str(item.path),)).fetchone()[0]
-                connection.execute("DELETE FROM image_labels WHERE image_id=?", (image_id,))
+            with connection:
                 connection.executemany(
-                    "INSERT OR IGNORE INTO image_labels(image_id,label) VALUES(?,?)",
-                    [(image_id, label) for label in item.annotation_labels if label],
+                    "INSERT INTO images(id,path,relative_path,file_name,file_size,mtime_ns,width,height,annotation_path,annotation_status,sort_key,annotation_size,annotation_mtime_ns) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET "
+                    "relative_path=excluded.relative_path,file_name=excluded.file_name,file_size=excluded.file_size,mtime_ns=excluded.mtime_ns,"
+                    "annotation_path=excluded.annotation_path,annotation_status=excluded.annotation_status,sort_key=excluded.sort_key,"
+                    "annotation_size=excluded.annotation_size,annotation_mtime_ns=excluded.annotation_mtime_ns",
+                    values,
                 )
+                connection.executemany(
+                    "INSERT OR IGNORE INTO scan_seen_paths(path) VALUES(?)",
+                    [(str(item.path),) for item in batch],
+                )
+                paths = [str(item.path) for item in batch]
+                for start in range(0, len(paths), 900):
+                    path_chunk = paths[start:start + 900]
+                    placeholders = ",".join("?" for _ in path_chunk)
+                    connection.execute(
+                        "DELETE FROM image_labels WHERE image_id IN ("
+                        f"SELECT id FROM images WHERE path IN ({placeholders}))", path_chunk
+                    )
+                labeled_items = [item for item in batch if item.annotation_labels]
+                if labeled_items:
+                    ids_by_path: dict[str, int] = {}
+                    for start in range(0, len(labeled_items), 900):
+                        path_chunk = [str(item.path) for item in labeled_items[start:start + 900]]
+                        placeholders = ",".join("?" for _ in path_chunk)
+                        rows = connection.execute(
+                            f"SELECT id,path FROM images WHERE path IN ({placeholders})", path_chunk
+                        )
+                        ids_by_path.update({str(path): int(image_id) for image_id, path in rows})
+                    connection.executemany(
+                        "INSERT OR IGNORE INTO image_labels(image_id,label) VALUES(?,?)",
+                        [
+                            (ids_by_path[str(item.path)], label)
+                            for item in labeled_items
+                            for label in item.annotation_labels
+                            if str(item.path) in ids_by_path and label
+                        ],
+                    )
 
     def update_metadata(self, image_id: int, width: int, height: int, annotation_status: str) -> None:
         with self._connect() as connection:
@@ -294,19 +376,20 @@ class DatasetIndexRepository:
             )
 
     def prune_missing(self, cancel_callback=None) -> None:
-        """Remove stale rows after a completed directory scan."""
+        """Remove stale rows by comparing paths observed in this scan."""
+        if cancel_callback and cancel_callback():
+            return
         with self._connect() as connection:
-            paths = [row[0] for row in connection.execute("SELECT path FROM images")]
-            stale = []
-            for value in paths:
-                if cancel_callback and cancel_callback():
-                    return
-                if not Path(value).is_file():
-                    stale.append((value,))
-            if stale:
-                connection.executemany("DELETE FROM images WHERE path=?", stale)
+            connection.execute(
+                "DELETE FROM images WHERE NOT EXISTS ("
+                "SELECT 1 FROM scan_seen_paths seen WHERE seen.path=images.path)"
+            )
+            connection.execute("DELETE FROM scan_seen_paths")
 
-    def scan_paths(self, cancel_callback=None, batch_size: int = 500, label_names: list[str] | None = None):
+    def scan_paths(
+        self, cancel_callback=None, batch_size: int = 500,
+        label_names: list[str] | None = None, first_batch_size: int | None = None,
+    ):
         coco_labels = self._load_coco_labels() if self.annotation_format == "coco" else {}
         coco_json = self._coco_json_path() if self.annotation_format == "coco" else None
         cached = self._cached_annotation_rows()
@@ -321,6 +404,7 @@ class DatasetIndexRepository:
                 with self._connect() as connection:
                     connection.execute("DELETE FROM dataset_meta WHERE key='label_mapping'")
         batch: list[IndexedImage] = []
+        active_batch_size = max(1, int(first_batch_size or batch_size))
         for root, _dirs, files in os.walk(self.image_dir):
             for name in files:
                 if cancel_callback and cancel_callback():
@@ -361,9 +445,10 @@ class DatasetIndexRepository:
                     annotation_labels=tuple(labels), annotation_size=annotation_size,
                     annotation_mtime_ns=annotation_mtime_ns,
                 ))
-                if len(batch) >= batch_size:
+                if len(batch) >= active_batch_size:
                     yield batch
                     batch = []
+                    active_batch_size = max(1, int(batch_size))
         if batch:
             yield batch
         if self.annotation_format == "yolo" and not (cancel_callback and cancel_callback()):

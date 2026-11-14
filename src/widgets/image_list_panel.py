@@ -2,11 +2,54 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6.QtCore import QAbstractListModel, QModelIndex, QSignalBlocker, QTimer, Qt, Signal
-from PySide6.QtGui import QKeyEvent
-from PySide6.QtWidgets import QAbstractItemView, QComboBox, QLabel, QLineEdit, QListView, QVBoxLayout, QWidget
+from PySide6.QtCore import QAbstractListModel, QModelIndex, QSignalBlocker, QSize, QTimer, Qt, Signal
+from PySide6.QtGui import QIcon, QKeyEvent
+from PySide6.QtWidgets import QAbstractItemView, QComboBox, QLabel, QLineEdit, QListView, QToolButton, QVBoxLayout, QWidget
 
+from src.app_paths import resource_path
 from src.models.project import ImageRecord
+
+
+class SearchLineEdit(QLineEdit):
+    """Search field with a trailing in-field button.
+
+    The button mirrors the per-row menu button of the history dialog (same
+    icon, size, hover surface) so the filter entry point reads as part of the
+    field rather than a separate toolbar control.
+    """
+
+    actionClicked = Signal()
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.action_button = QToolButton(self)
+        self.action_button.setObjectName("searchActionButton")
+        icon_path = resource_path("icons/ic_more.png")
+        if icon_path.exists():
+            self.action_button.setIcon(QIcon(str(icon_path)))
+        self.action_button.setIconSize(QSize(12, 12))
+        self.action_button.setFixedSize(20, 20)
+        self.action_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.action_button.setStyleSheet(
+            "QToolButton#searchActionButton { background: transparent; border: none; padding: 0; border-radius: 4px; }"
+            "QToolButton#searchActionButton:hover { background: #3C4046; }"
+        )
+        self.action_button.clicked.connect(lambda: self.actionClicked.emit())
+        # Keep typed text clear of the button.
+        self.setTextMargins(0, 0, 26, 0)
+        self._place_action_button()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._place_action_button()
+
+    def _place_action_button(self) -> None:
+        button = self.action_button
+        button.move(
+            max(0, self.width() - button.width() - 5),
+            max(0, (self.height() - button.height()) // 2),
+        )
+        button.raise_()
 
 
 class ImageFileModel(QAbstractListModel):
@@ -143,14 +186,15 @@ class ImageListPanel(QWidget):
     recordsFetched = Signal(object)
     contextMenuRequested = Signal(object)
     filtersChanged = Signal()
+    filterRequested = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setObjectName("projectPanel")
         self.title_label = QLabel("")
-        self.hint_label = QLabel("")
-        self.search = QLineEdit()
+        self.search = SearchLineEdit()
         self.search.setPlaceholderText("\u641c\u7d22\u56fe\u7247...")
+        self.search.actionClicked.connect(self.filterRequested)
         self.label_filter = ""
         self.status = QComboBox()
         self.status.addItem("All", "all")
@@ -197,8 +241,11 @@ class ImageListPanel(QWidget):
         self.contextMenuRequested.emit(self.list_model.records[index.row()])
 
     def set_language(self, language: str) -> None:
-        self.search.setPlaceholderText("Search images..." if language == "en_US" else "\u641c\u7d22\u56fe\u7247...")
+        english = language == "en_US"
+        self.search.setPlaceholderText("Search images..." if english else "\u641c\u7d22\u56fe\u7247...")
+        self.search.action_button.setToolTip("File Filter" if english else "\u6587\u4ef6\u7b5b\u9009")
 
+    
     def reset_filters(self) -> None:
         """Drop the previous dataset's filters so a fresh open starts clean."""
         self.set_label_filter("")

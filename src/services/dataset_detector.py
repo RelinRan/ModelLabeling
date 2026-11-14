@@ -16,6 +16,7 @@ class DetectedDataset:
     image_dir: Path
     annotation_dir: Path
     task_name: str | None = None
+    keypoint_names: tuple[str, ...] = ()
 
 
 class DatasetDetector:
@@ -111,7 +112,13 @@ class DatasetDetector:
                 except (OSError, json.JSONDecodeError):
                     continue
                 if {"images", "annotations", "categories"}.issubset(document):
-                    return DetectedDataset("coco", root, image_dir, annotation_dir)
+                    schemas = {
+                        tuple(str(name) for name in category.get("keypoints", []) if str(name).strip())
+                        for category in document.get("categories", [])
+                        if category.get("keypoints")
+                    }
+                    names = next(iter(schemas)) if len(schemas) == 1 else ()
+                    return DetectedDataset("coco", root, image_dir, annotation_dir, None, names)
         return None
 
     @classmethod

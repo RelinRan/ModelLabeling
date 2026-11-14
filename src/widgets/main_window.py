@@ -21,7 +21,6 @@ from src.models.annotation import Annotation, LabelPreset, ShapeType, label_colo
 from src.models.keypoint import COCO_PERSON_KEYPOINTS
 from src.models.project import ImageRecord, KeypointGroup, ProjectSettings, ProjectState
 from src.services.annotation_service import AnnotationService
-from src.services.dataset_detector import DatasetDetector
 from src.services.image_service import ImageService
 from src.services.dataset_index import DatasetIndexRepository, IndexedImage
 from src.services.keypoint_group_store import KeypointGroupStore
@@ -29,7 +28,9 @@ from src.services.label_group_store import LabelGroupStore
 from src.services.project_service import ProjectService
 from src.services.operation_coordinator import OperationCoordinator
 from src.services.dataset_session import DatasetScanResult, DatasetSession
-from src.services.workers import AutoLabelWorker, DatasetAnnotationSaveWorker, DatasetCountWorker, DatasetScanWorker, DatasetStatisticsWorker, SaveWorker, SingleImageAnnotationWorker
+from src.services.dataset_detector import DatasetDetector
+from src.services.workers import AutoLabelWorker, CocoCheckpointWorker, DatasetAnnotationSaveWorker, DatasetCountWorker, DatasetDetectionWorker, DatasetScanWorker, DatasetStatisticsWorker, SaveWorker, SingleImageAnnotationWorker
+from src.services.yolo_layout import LayoutMigration, migrate_plain_folder, needs_standard_layout
 from src.services.format_capabilities import CAPABILITIES, task_for_format
 from src.services.display_names import format_task_name
 from src.services.yolo_metadata import write_kpt_shape, yolo_keypoint_names, yolo_keypoint_shape
@@ -119,6 +120,10 @@ class MainWindow(QMainWindow):
         self._video_tools_thread = self._video_tools_worker = None
         self._dataset_thread = self._conversion_thread = self._auto_thread = None
         self._dataset_worker = self._conversion_worker = self._auto_worker = None
+        self._detection_thread = self._detection_worker = None
+        self._pending_dataset_root: Path | None = None
+        self._coco_checkpoint_threads = []
+        self._coco_keypoint_names: tuple[str, ...] = ()
         self._count_thread = self._count_worker = None
         self._annotation_thread = self._annotation_worker = None
         self._annotation_request_path: Path | None = None
@@ -160,6 +165,12 @@ class MainWindow(QMainWindow):
         self._startup_reopen_done = False
         self._pending_save_statistics: tuple[str, Counter[str], Counter[str]] | None = None
         self._restart_statistics_after_finish = False
+        # A plain image folder is converted to the standard images/+labels/
+        # layout once, on the first annotation save. Declining the conversion
+        # stops saves until the dataset is reopened, so the app never writes a
+        # layout that Ultralytics cannot read.
+        self._plain_layout_declined = False
+        self._reload_after_migration = False
         self._auto_save_timer = QTimer(self); self._auto_save_timer.setSingleShot(True); self._auto_save_timer.timeout.connect(self.save_current)
         self.operation_coordinator = OperationCoordinator()
         self._build_ui(); self._sync_type_labels_into_presets(); self._apply_annotation_capabilities(); self.task_manager.changed.connect(self._refresh_task_status); self._build_menu(); self._apply_style(); self._update_window_title()
@@ -270,6 +281,7 @@ class MainWindow(QMainWindow):
         self.navigation_toolbar = self.operations_panel.navigation_toolbar
         self.preset_panel.set_groups(self.settings.label_groups, self.settings.label_groups[0].name)
         self.image_panel.imageSelected.connect(self.select_image)
+        self.image_panel.filterRequested.connect(self.open_image_filter)
         self.image_panel.contextMenuRequested.connect(self._show_image_context_menu)
         self.image_panel.recordsFetched.connect(self._image_records_fetched)
         self.image_panel.list.previousRequested.connect(self.previous_image)
@@ -578,28 +590,10 @@ class MainWindow(QMainWindow):
         )
         self.canvas.set_mode(configured or next(iter(supported), ShapeType.RECTANGLE))
         keypoint_names: list[str] = []
-        if task.value == "coco" and self.settings.annotation_dir:
-            # COCO's keypoint schema lives per category in the JSON; restore
-            # the first category that defines keypoints so a custom count
-            # survives reopening the dataset.
-            try:
-                json_path = AnnotationService._coco_json_path(self.settings.annotation_dir)
-                if json_path and json_path.is_file():
-                    document = json.loads(json_path.read_text(encoding="utf-8"))
-                    schemas = {
-                        tuple(str(n) for n in category.get("keypoints", []) if str(n).strip())
-                        for category in document.get("categories", [])
-                        if category.get("keypoints")
-                    }
-                    # COCO permits different keypoint counts per category.
-                    # Only restore the canvas schema when every category that
-                    # defines keypoints agrees on one count.
-                    if len(schemas) == 1:
-                        names = list(next(iter(schemas)))
-                        if names:
-                            self.canvas.set_keypoint_count(len(names), names)
-            except (OSError, ValueError, json.JSONDecodeError):
-                pass
+        if task.value == "coco":
+            if self._coco_keypoint_names:
+                names = list(self._coco_keypoint_names)
+                self.canvas.set_keypoint_count(len(names), names)
         elif task.value == "yolo_pose" and self.settings.annotation_dir:
             # data.yaml is the authoritative keypoint shape: kpt_shape decides
             # the count, kpt_names (optional) the labels. Fall back to the
@@ -677,8 +671,23 @@ class MainWindow(QMainWindow):
                 self._record_from_index(item)
                 for item in self.dataset_index_repository.get_page(offset, limit, query, status, label)
             ]
+            scan_running = self._dataset_thread is not None and self._dataset_thread.isRunning()
+            page_loader = (
+                self.dataset_index_repository.get_scanned_page
+                if scan_running else self.dataset_index_repository.get_page
+            )
+            indexed_count = (
+                self.dataset_index_repository.scanned_count(query, status, label)
+                if scan_running else self.dataset_index_repository.count(query, status, label)
+            )
+            loader = lambda offset, limit, query=query, status=status, label=label, page_loader=page_loader: [
+                self._record_from_index(item)
+                for item in page_loader(offset, limit, query, status, label)
+            ]
             page = loader(0, 100)
-            filtered_total = self.dataset_index_repository.count(query, status, label)
+            filtered_total = (
+                indexed_count
+            )
             # Filtering is a view operation. Replacing state.images with the
             # filtered page changes current_index to a different physical
             # image when filters are reset, which can save the visible boxes
@@ -1306,7 +1315,12 @@ class MainWindow(QMainWindow):
 
     def _operation_blocked(self, operation: str) -> bool:
         coordinator = self.operation_coordinator
-        coordinator.dataset_loading = self._dataset_thread is not None and self._dataset_thread.isRunning()
+        coordinator.dataset_loading = (
+            self._pending_dataset_root is not None
+            or
+            (self._detection_thread is not None and self._detection_thread.isRunning())
+            or (self._dataset_thread is not None and self._dataset_thread.isRunning())
+        )
         coordinator.auto_labeling = self._auto_thread is not None and self._auto_thread.isRunning()
         coordinator.converting = ((self._conversion_thread is not None and self._conversion_thread.isRunning()) or (self._video_tools_thread is not None and self._video_tools_thread.isRunning()) or (self._compare_thread is not None and self._compare_thread.isRunning()))
         coordinator.statistics_running = self._stats_thread is not None and self._stats_thread.is_alive()
@@ -1422,6 +1436,10 @@ class MainWindow(QMainWindow):
     def _start_open_path(self, root: Path) -> None:
         if self._operation_blocked("dataset"):
             return
+        if self._detection_thread is not None:
+            english = self.settings.language == "en_US"
+            AppDialog.information("Notice" if english else "提示", "Dataset detection is already in progress. Please wait." if english else "正在识别数据集，请稍候。", self)
+            return
         # A dataset/history switch can happen before the delayed auto-save
         # timer fires. Snapshot the currently visible image while its old
         # dataset settings and annotation directories are still active.
@@ -1437,12 +1455,7 @@ class MainWindow(QMainWindow):
                 return
             QApplication.processEvents()
             self._save_thread = self._save_worker = None
-        self._export_coco_checkpoint()
         requested_root = Path(root).resolve()
-        # Show feedback before dataset detection starts. Detection itself is
-        # synchronous, so otherwise the status bar stays blank at the start
-        # of the first dataset load.
-        self._set_status_progress("???", 0, 0)
         if self.dataset_root and requested_root == self.dataset_root.resolve():
             self.status_progress_host.setVisible(False)
             language = self.settings.language
@@ -1452,13 +1465,52 @@ class MainWindow(QMainWindow):
                 self,
             )
             return
-        try:
-            detected = DatasetDetector.detect(requested_root)
-        except ValueError as exc:
-            self.status_progress_host.setVisible(False)
-            AppDialog.information("提示", translate_error(str(exc)), self); return
+        self._pending_dataset_root = requested_root
+        self._dataset_scan_completed = False
+        self._dataset_load_succeeded = False
+        self._dataset_user_navigated = False
+        self.canvas.clear_image()
+        self._set_status_progress("加载", 0, 0)
+        self.status_progress_current.setText("正在识别数据集" if self.settings.language != "en_US" else "Detecting dataset")
+        self._detection_thread = QThread(self)
+        self._detection_worker = DatasetDetectionWorker(requested_root)
+        self._detection_worker.moveToThread(self._detection_thread)
+        self._detection_thread.started.connect(self._detection_worker.run)
+        self._detection_worker.finished.connect(self._dataset_detected)
+        self._detection_worker.failed.connect(self._dataset_detection_failed)
+        self._detection_worker.finished.connect(self._detection_thread.quit)
+        self._detection_worker.failed.connect(self._detection_thread.quit)
+        self._detection_thread.finished.connect(self._detection_thread_finished)
+        self._detection_thread.start()
+
+    def _dataset_detected(self, detected) -> None:
+        self._pending_dataset_root = None
+        self._plain_layout_declined = False
+        self._reload_after_migration = False
+        old_annotation_dir = self.settings.annotation_dir
+        old_format = self.settings.annotation_format
+        if old_format == "coco" and old_annotation_dir:
+            self._start_coco_checkpoint(old_annotation_dir)
+        self._coco_keypoint_names = tuple(getattr(detected, "keypoint_names", ()))
         self.dataset_session = DatasetSession.from_detected(detected)
-        self.dataset_root = self.dataset_session.root; self.settings.annotation_format = self.dataset_session.format_name; self.settings.dataset_task = self.dataset_session.task_name; self.settings.image_dir = self.dataset_session.image_dir; self.settings.annotation_dir = self.dataset_session.annotation_dir; self._apply_annotation_capabilities(); self._update_window_title(); self.refresh_stats(); self._remember_history(root); self.history_store.setValue("reopen/last_root", str(self.dataset_session.root)); self.history_store.sync(); self._start_dataset_scan(self.dataset_session.image_dir, self.dataset_session.annotation_dir)
+        self.dataset_root = self.dataset_session.root; self.settings.annotation_format = self.dataset_session.format_name; self.settings.dataset_task = self.dataset_session.task_name; self.settings.image_dir = self.dataset_session.image_dir; self.settings.annotation_dir = self.dataset_session.annotation_dir; self._apply_annotation_capabilities(); self._update_window_title(); self.refresh_stats(); self._remember_history(self.dataset_session.root); self.history_store.setValue("reopen/last_root", str(self.dataset_session.root)); self.history_store.sync(); self._start_dataset_scan(self.dataset_session.image_dir, self.dataset_session.annotation_dir)
+
+    def _dataset_detection_failed(self, message: str) -> None:
+        self._pending_dataset_root = None
+        self.status_progress_host.setVisible(False)
+        if self.state.current_image is not None:
+            self._select_state_image()
+        if self.isVisible():
+            AppDialog.information("提示", translate_error(message), self)
+
+    def _detection_thread_finished(self) -> None:
+        thread = self._detection_thread
+        worker = self._detection_worker
+        self._detection_thread = self._detection_worker = None
+        if worker is not None:
+            worker.deleteLater()
+        if thread is not None:
+            thread.deleteLater()
 
     def _start_dataset_scan(self, image_dir: Path, annotation_dir: Path) -> None:
         # Invalidate queued callbacks before stopping the previous workers.
@@ -1582,6 +1634,12 @@ class MainWindow(QMainWindow):
         else:
             self._set_status_progress("加载", current, 0)
         self.task_manager.update(self.dataset_task_id, percent if total else 0, current, total)
+        if self.dataset_index_repository is not None:
+            query = self.image_panel.search.text()
+            status = self.image_panel.selected_status()
+            label = self.image_panel.selected_label()
+            visible = self.dataset_index_repository.scanned_count(query, status, label)
+            self.image_panel.set_total_count(visible)
 
     def _dataset_count_ready(self, total: int, session_id: str) -> None:
         if session_id != self.dataset_session_id or total <= 0:
@@ -1597,6 +1655,7 @@ class MainWindow(QMainWindow):
         else:
             self._set_status_progress("加载", self.dataset_indexed_images, total, percent)
         self.image_panel.set_total_count(total)
+        self.refresh_image_list()
         self.refresh_stats()
 
     def _count_thread_finished(self) -> None:
@@ -1667,7 +1726,7 @@ class MainWindow(QMainWindow):
                 self.dataset_total_images = max(self.dataset_total_images, indexed_total)
             if scan_result.append_only:
                 append_only_result = True
-                records = self.state.images
+                records = [record for record in self.state.images if record.path.is_file()]
             else:
                 records = scan_result.records
             if scan_result.presets:
@@ -1875,6 +1934,12 @@ class MainWindow(QMainWindow):
         # first completion is applied.
         if self._save_worker is not None:
             return
+        # A folder of images that are not inside images/ is not a dataset the
+        # YOLO trainer can read: it resolves labels beside the image, not in
+        # labels/. Convert the folder once, before the first save, so no
+        # non-standard dataset is ever produced.
+        if not self._prepare_standard_layout():
+            return
         generation = self._save_generation
         self._save_generation_in_flight = generation
         save_settings = ProjectSettings.from_dict(self.settings.to_dict())
@@ -1889,7 +1954,8 @@ class MainWindow(QMainWindow):
             worker = SaveWorker(self.project_file, image_path, annotations, save_settings)
         elif self.settings.image_dir and self.settings.annotation_dir:
             worker = DatasetAnnotationSaveWorker(
-                image_path, self.settings.image_dir, self.settings.annotation_dir, annotations, save_settings
+                image_path, self.settings.image_dir, self.settings.annotation_dir, annotations,
+                save_settings, dataset_root=self.dataset_root,
             )
         else:
             self.dirty = False
@@ -1908,6 +1974,117 @@ class MainWindow(QMainWindow):
         )
         self._save_thread = thread
         thread.start()
+
+    def _prepare_standard_layout(self) -> bool:
+        """Convert a plain image folder to images/+labels/ before saving.
+
+        Returns False when the save must be abandoned: the user declined the
+        one-time conversion, or the conversion failed. A non-standard folder is
+        never written to, because a trainer would read every image as
+        background (it looks for the label beside the image, not in labels/).
+        """
+        if not needs_standard_layout(
+            self.dataset_root, self.settings.image_dir,
+            self.settings.annotation_dir, self.settings.annotation_format,
+        ):
+            return True
+        if self._plain_layout_declined:
+            return False
+        english = self.settings.language == "en_US"
+        title = "Convert to a standard YOLO dataset" if english else "转换为标准 YOLO 数据集"
+        message = (
+            "This folder is not a standard YOLO dataset: the images are not "
+            "inside an images/ directory, so the trainer cannot find their "
+            "labels.\n\nConvert it now?\n"
+            "• images are moved into images/ (not copied)\n"
+            "• annotations stay in labels/\n"
+            "• classes.txt and data.yaml are written in this folder\n\n"
+            "Cancelling does not save the current annotations."
+            if english else
+            "该文件夹不是标准 YOLO 数据集：图片不在 images/ 目录下，训练器找不到"
+            "对应的标注。\n\n是否立即整理为标准结构？\n"
+            "• 图片移动到 images/（不复制）\n"
+            "• 标注保存在 labels/\n"
+            "• 在本文件夹生成 classes.txt 与 data.yaml\n\n"
+            "取消将不保存当前标注。"
+        )
+        if not AppDialog.question(title, message, self, self.settings.language):
+            self._plain_layout_declined = True
+            return False
+        presets = list(self.dataset_parser_presets or self.settings.label_presets)
+        task_name = self.settings.dataset_task or "yolo_detection"
+        # Never move files while the background scan is walking them. The
+        # post-save reload rebuilds the index for the new layout.
+        if self._dataset_thread is not None and self._dataset_thread.isRunning():
+            self._stop_dataset_workers_for_switch()
+            self._dataset_scan_completed = False
+        try:
+            migration = migrate_plain_folder(
+                self.dataset_root, presets=presets, task_name=task_name,
+            )
+        except (OSError, ValueError) as exc:
+            AppDialog.information(
+                "Notice" if english else "提示", translate_error(str(exc)), self,
+                self.settings.language,
+            )
+            return False
+        self._apply_layout_migration(migration)
+        self._reload_after_migration = True
+        return True
+
+    def _apply_layout_migration(self, migration: LayoutMigration) -> None:
+        """Point the session at the migrated directories without reloading.
+
+        The image files moved, but the relative structure did not, so every
+        in-memory record keeps its position; only the prefix changes. The
+        dataset is reloaded after the pending save completes.
+        """
+        old_image_dir = Path(self.settings.image_dir) if self.settings.image_dir else None
+        self.settings.image_dir = migration.image_dir
+        self.settings.annotation_dir = migration.annotation_dir
+        if self.dataset_session is not None:
+            self.dataset_session.image_dir = migration.image_dir
+            self.dataset_session.annotation_dir = migration.annotation_dir
+        if old_image_dir is None:
+            return
+
+        def rebase(path: Path) -> Path:
+            try:
+                return migration.image_dir / Path(path).relative_to(old_image_dir)
+            except (TypeError, ValueError):
+                return Path(path)
+
+        seen: set[int] = set()
+        for record in (*self.state.images, *self.image_panel.records):
+            if id(record) in seen:
+                continue
+            seen.add(id(record))
+            record.path = rebase(record.path)
+        self._saved_annotation_labels = {
+            str(rebase(Path(key))): counts
+            for key, counts in self._saved_annotation_labels.items()
+        }
+        if self.state.current_image is not None:
+            self._remember_current_image(self.state.current_image.path)
+        # The index cache is keyed by image directory and still describes the
+        # old layout; the post-save reload creates a fresh one.
+        self.dataset_index_repository = None
+
+    def _reload_dataset_after_migration(self) -> None:
+        """Rebuild the session, index and image list for the migrated layout."""
+        if self._save_worker is not None or self.dirty:
+            # A newer edit is still being written or is pending; the next
+            # successful save retries this reload instead of discarding it.
+            return
+        self._reload_after_migration = False
+        root = self.dataset_root
+        if root is None:
+            return
+        try:
+            detected = DatasetDetector.detect(root)
+        except ValueError:
+            return
+        self._dataset_detected(detected)
 
     @staticmethod
     def _save_run(worker) -> None:
@@ -1942,6 +2119,10 @@ class MainWindow(QMainWindow):
             self.dirty = False
         elif self.settings.auto_save:
             self._auto_save_timer.start(0)
+        if not error and self._reload_after_migration:
+            # The first save after a plain-folder conversion: rebuild the
+            # session and index against images/ once the label is on disk.
+            QTimer.singleShot(0, self._reload_dataset_after_migration)
         if not error and not self.settings.auto_save:
             self._export_coco_checkpoint()
 
@@ -1958,6 +2139,24 @@ class MainWindow(QMainWindow):
         except (OSError, ValueError) as exc:
             if self.isVisible():
                 AppDialog.information("提示", translate_error(str(exc)), self)
+
+    def _start_coco_checkpoint(self, annotation_dir: Path) -> None:
+        thread = QThread(self)
+        worker = CocoCheckpointWorker(annotation_dir)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(lambda error, current=thread: self._coco_checkpoint_finished(current, error))
+        worker.finished.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        self._coco_checkpoint_threads.append(thread)
+        thread.start()
+
+    def _coco_checkpoint_finished(self, thread, error: str) -> None:
+        if thread in self._coco_checkpoint_threads:
+            self._coco_checkpoint_threads.remove(thread)
+        if error and self.isVisible():
+            AppDialog.information("提示", translate_error(error), self)
 
     def _apply_saved_annotation_statistics(self, pending=None) -> None:
         if pending is None:
@@ -2060,6 +2259,11 @@ class MainWindow(QMainWindow):
                 self,
             ):
                 self.open_settings(category=2)  # Auto Label page
+            return
+        # Auto labeling writes label files directly, so a plain folder must be
+        # converted first as well; otherwise the whole run lands in a layout
+        # the trainer ignores.
+        if not self._prepare_standard_layout():
             return
         auto_settings = ProjectSettings.from_dict(self.settings.to_dict())
         auto_settings.label_presets = list(
@@ -2172,6 +2376,10 @@ class MainWindow(QMainWindow):
         if self._auto_worker: self._auto_worker.cancelled = True
     def _auto_thread_finished(self) -> None:
         self.status_progress_host.setVisible(False); self.task_manager.finish(self.auto_task_id); self.auto_task_id = None; self._auto_thread = self._auto_worker = None; self._maybe_close_task_list()
+        if self._reload_after_migration:
+            self._reload_after_migration = False
+            QTimer.singleShot(0, self._reload_dataset_after_migration)
+            return
         if self._auto_cancel_requested:
             self.refresh_image_list()
             self._dataset_statistics = None
@@ -2195,6 +2403,8 @@ class MainWindow(QMainWindow):
             stats_thread.join(timeout=15)
 
         threads = (
+            getattr(self, "_detection_thread", None),
+            *getattr(self, "_coco_checkpoint_threads", ()),
             self._dataset_thread,
             self._count_thread,
             self._conversion_thread,

@@ -29,6 +29,17 @@ No real dataset was converted, annotated, or deleted for this audit.
 - Statistics still process each image, but publish UI snapshots at most
   once every 50 ms, plus exact initial/final progress. This reduces queued
   UI work and repeated counter sorting for large datasets.
+- Dataset format detection and COCO keypoint-schema parsing run in a worker;
+  the UI no longer parses a large COCO JSON before dataset indexing starts.
+- A valid completed index now provides the first 100 image records immediately,
+  while the worker revalidates the filesystem. The live list pages only rows
+  confirmed by the current scan; once complete, it switches to the full index.
+- The first scan batch remains 100 images for early usability; subsequent
+  database batches are 1,000. This reduces transaction overhead without
+  delaying the first visible batch.
+- Index pruning compares scanned paths in SQLite rather than issuing one
+  filesystem existence check per old row. Batch upsert resolves label IDs in
+  chunks and avoids ID lookups for unlabeled images.
 
 ## COCO persistence and cache follow-up
 
@@ -55,6 +66,28 @@ No real dataset was converted, annotated, or deleted for this audit.
   Targeted shortcut/settings/conversion regression suite: **52 passed** in 147.55 seconds.
 - `python -m compileall -q src tests` and `git diff --check`: passed after the
   follow-up edits.
+- Dataset detection/index workflow: **22 passed**. Latest full suite after
+  asynchronous detection and index pruning: **363 passed** in 280.43 seconds.
+- Latest full suite after cached-first-page preload, live SQLite paging, and
+  scan cleanup fixes: **365 passed** in 284.13 seconds. Focused paging and GUI
+  regressions: **30 passed**. `compileall` and `git diff --check`: passed.
+- Batch-size comparison (10,000 empty placeholders, seconds): batch 100 first/
+  cached 6.84/5.33; 500 6.18/4.66; 1,000 6.05/4.59. At 100,000, measured
+  first/cached: 500 = 61.27/47.18, 1,000 = 60.04/45.66, 2,500 = 59.25/45.39.
+  Larger batches have diminishing returns, so the application uses 1,000 after
+  the 100-image first batch.
+- Synthetic empty-file index benchmark (seconds, this Windows workspace):
+
+  | Images | First scan | Cached scan | Enumeration (first/cached) | SQLite/index work (first/cached) |
+  | ---: | ---: | ---: | ---: | ---: |
+  | 10,000 | 6.15 | 4.58 | 0.64 / 0.46 | 5.51 / 4.11 |
+  | 50,000 | 30.25 | 22.75 | 0.68 / 0.66 | 29.58 / 22.09 |
+  | 100,000 | 60.49 | 45.95 | 0.78 / 0.95 | 59.71 / 45.00 |
+
+  These are path-index timings with empty placeholder files, not image decode,
+  annotation parsing, statistics, UI latency, memory, or real-drive guarantees.
+  Reproduction: `python scripts/benchmark_dataset_index.py`. Output from the
+  latest run: `tmp/dataset-index-benchmark-20261024-optimized.json`.
 
 - COCO/cache follow-up full suite: **356 passed**, 351.33 seconds. Report:
   `tmp/optimization-final-20261023.xml`. Cancellation tests cover both initial

@@ -34,7 +34,7 @@ def test_shutdown_waits_for_counter_and_dataset_comparison(monkeypatch):
     counter, comparison = Thread(), Thread()
     owner = SimpleNamespace(
         task_manager=SimpleNamespace(tasks=lambda: []), _stats_worker=None, _stats_thread=None,
-        _dataset_thread=None, _count_thread=counter, _conversion_thread=None,
+        _detection_thread=None, _dataset_thread=None, _count_thread=counter, _conversion_thread=None,
         _compare_thread=comparison, _video_tools_thread=None, _auto_thread=None,
         _annotation_thread=None, _save_thread=None,
     )

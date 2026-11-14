@@ -38,7 +38,7 @@ To publish a release, push a version tag such as `v1.2.0`. The workflow runs the
 | Annotation methods | Rectangle, square, polygon, rotated box, keypoints (filtered by the current dataset's task) |
 | Keypoint types | Predefined point count, point names, and annotation label (Ctrl+K+G); built-in Pose (17 COCO person points, `pose`) and Car (`car`); picking a type on the canvas arms its whole schema |
 | Dataset creation | Workspace wizard: workspace + name + options; source images are copied in (existing datasets import their annotations too) |
-| Compatibility | Fully unannotated datasets open directly (empty labels/, no Annotations/, plain image folders) |
+| Compatibility | Fully unannotated datasets open directly (empty labels/, no Annotations/, plain image folders — converted to the standard images/ + labels/ layout on first save) |
 | Auto labeling | YOLO Detection / Segmentation / Pose / OBB ONNX decoding; runs in background, stoppable |
 | Conversion | Batch YOLO / Pascal VOC / COCO conversion preserving layout and data.yaml class names |
 | Video tools | Recursively extract frames from nested video folders at a selected FPS; synthesize YOLO / Pascal VOC / COCO datasets from frame folders |
@@ -235,6 +235,7 @@ src/
 │  └─ project.py           ProjectSettings / ProjectState / ImageRecord
 ├─ services/               service layer (no UI dependencies)
 │  ├─ dataset_detector.py  layout & task detection (plain-image fallback, unannotated support)
+│  ├─ yolo_layout.py       plain folder -> standard images/ + labels/ conversion
 │  ├─ dataset_initializer.py  workspace-based dataset creation
 │  ├─ dataset_index.py     per-dataset SQLite path index (paging/filter/locate)
 │  ├─ dataset_session.py   authoritative context for the open dataset
@@ -290,6 +291,9 @@ An end-to-end script `test_annotation_flow.py` (three formats opened × five met
 
 **"Unsupported dataset format" when opening a folder?**
 Make sure the folder contains images, or initialize it with the New wizard (Ctrl+N).
+
+**I opened a plain image folder — where did the images go?**
+On the first save the folder is converted to the standard YOLO layout: images are moved into `images/`, annotations go to `labels/`, and `classes.txt` + `data.yaml` are written in the same folder. YOLO resolves a label by replacing the last `/images/` in the image path, so labels in a sibling `labels/` are invisible to the trainer while the images sit at the folder root. Nothing is copied, and cancelling the conversion leaves the folder untouched (nothing is saved).
 
 **What if a YOLO dataset has no classes.txt?**
 It opens and annotates fine; the file is created on first save with the current labels.

@@ -4,6 +4,8 @@ import json
 from src.models.project import ProjectSettings
 from src.services.dataset_detector import DatasetDetector
 from src.services.workers import DatasetScanWorker
+from src.services.workers import DatasetDetectionWorker
+from src.services.dataset_index import DatasetIndexRepository
 from src.services.conversion_service import ConversionOptions, ConversionService
 from src.services.annotation_service import AnnotationService
 from src.models.annotation import LabelPreset
@@ -80,6 +82,30 @@ def test_official_pose_uses_yaml_schema(tmp_path):
     assert detected.task_name == "yolo_pose"
 
 
+def test_detection_worker_returns_coco_keypoint_schema(tmp_path):
+    root = tmp_path / "coco-pose"
+    image_dir = root / "images"
+    annotation_dir = root / "annotations"
+    image_dir.mkdir(parents=True)
+    annotation_dir.mkdir()
+    names = ["left_eye", "right_eye"]
+    (annotation_dir / "person_keypoints.json").write_text(
+        json.dumps({
+            "images": [], "annotations": [],
+            "categories": [{"id": 1, "name": "person", "keypoints": names}],
+        }), encoding="utf-8"
+    )
+
+    worker = DatasetDetectionWorker(root)
+    values = []
+    worker.finished.connect(values.append)
+    worker.run()
+
+    assert len(values) == 1
+    assert values[0].format_name == "coco"
+    assert values[0].keypoint_names == tuple(names)
+
+
 def test_scan_worker_reads_official_yaml_class_names(tmp_path):
     root = tmp_path / "detect"
     _yolo_layout(root, "1 0.5 0.5 0.4 0.4", "names:\n  0: person\n  1: vehicle\n")
@@ -95,6 +121,43 @@ def test_scan_worker_reads_official_yaml_class_names(tmp_path):
     )._discover_presets()
 
     assert [preset.name for preset in presets] == ["person", "vehicle"]
+
+
+def test_scan_worker_emits_cached_first_page_before_revalidating_dataset(tmp_path):
+    root = tmp_path / "cached"
+    image_dir = root / "images"
+    labels_dir = root / "labels"
+    image_dir.mkdir(parents=True)
+    labels_dir.mkdir()
+    image_paths = []
+    for index in range(120):
+        image = image_dir / f"{index:03d}.jpg"
+        image.write_bytes(b"image")
+        image_paths.append(image)
+    settings = ProjectSettings(
+        image_dir=image_dir, annotation_dir=labels_dir,
+        annotation_format="yolo", dataset_task="yolo_detection",
+    )
+    repository = DatasetIndexRepository(root, image_dir, labels_dir, "yolo")
+    records = [item for batch in repository.scan_paths(batch_size=1000) for item in batch]
+    repository.upsert_batch(records)
+    repository.prune_missing()
+    repository.set_complete(True)
+    (image_dir / "late-added.jpg").write_bytes(b"image")
+
+    worker = DatasetScanWorker(image_dir, labels_dir, settings, root, "session")
+    partials, finished, failures = [], [], []
+    worker.partial.connect(partials.append)
+    worker.finished.connect(finished.append)
+    worker.failed.connect(failures.append)
+    worker.run()
+
+    assert not failures
+    assert partials
+    assert partials[0].total_images == 120
+    assert len(partials[0].records) == 100
+    assert len(finished) == 1
+    assert repository.count() == 121
 
 
 def test_conversion_uses_yaml_names_as_source_of_truth(tmp_path):
